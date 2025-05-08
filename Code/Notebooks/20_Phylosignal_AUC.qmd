@@ -1,0 +1,460 @@
+---
+title: "Resistance and phylogenetic correlation"
+format: html
+---
+
+Jacobo de la Cuesta-Zuluaga. June 2024.
+
+The aim of this notebook is to calculate the correlation between the resistance
+of the different bacteria to antibiotics, non-antibiotics and their phylogenetic
+distance.
+
+# Libraries
+```{r}
+library(tidyverse)
+library(ape)
+library(phytools)
+library(phylosignal)
+library(phylobase)
+library(conflicted)
+```
+
+```{r}
+conflicts_prefer(dplyr::select)
+conflicts_prefer(dplyr::filter)
+```
+
+# Directories
+```{r}
+base_dir = "/mnt/volume_1/dm_main/projects"
+Salmonella_dir = file.path(base_dir, "Salmonella_invasion_paper")
+figure_dir = file.path(Salmonella_dir, "Figures")
+```
+
+## Load tables and files
+```{r}
+# bacteria phylogeny
+# midpoint root
+phylogeny_raw = file.path(base_dir,
+                          "Genomes/Phylogeny/Proteome_phylophlan/RAxML_bestTree.Proteome_refined.tre") %>% 
+  read.tree() %>% 
+  midpoint.root()
+```
+
+```{r}
+# AUC table
+AUC_table = file.path(Salmonella_dir, "Tables/Prestw_screen.tsv") %>% 
+  read_tsv() %>% 
+  filter(NT_code %in% phylogeny_raw$tip.label)
+```
+
+```{r}
+# Species annotation
+species_annot_raw =  file.path(Salmonella_dir, "Data/Drug_hits_patho_comm/gut_species_magic40.csv") %>% 
+  read_csv2()
+
+species_annot = species_annot_raw %>% 
+  mutate(Phylum = factor(Phylum, levels = c("Actinobacteria", "Firmicutes", "Fusobacteria", 
+                                            "Bacteroidetes", "Verrucomicrobia", "Proteobacteria"))) %>% 
+  arrange(Phylum) %>%
+  # arrange(Phylum, Class, Order, Family, Genus, Species) %>% 
+  mutate(NT_code = fct_inorder(NT_code)) %>% 
+  filter(NT_code != "NT5085")
+```
+
+
+# Prepare tables
+
+```{r}
+# Identify compounds to be removed
+# Remove those with <= 5 hits
+AUC_table %>% 
+  group_by(prestwick_ID) %>% 
+  count(hit) %>% 
+  ungroup() %>%
+  rstatix::get_summary_stats(n, type = "five_number")
+
+retained_compounds = AUC_table %>% 
+  group_by(prestwick_ID) %>% 
+  count(hit) %>% 
+  ungroup() %>%
+  filter(n > 5 & hit == TRUE)
+```
+
+```{r}
+# Prepare AUC table
+# Add compound category as above
+AUC_table_categories = AUC_table %>%
+  filter(prestwick_ID %in% retained_compounds$prestwick_ID) %>% 
+  mutate(compound_cat = case_when(target_species == "bacteria" ~ "Antibacterial", 
+                                  human_use == TRUE ~ "non_antibacterial", 
+                                  target_species %in% c("fungi", "human", 
+                                                        "metazoan parasites",
+                                                        "viruses", "not a drug") ~ "non_antibacterial"))
+
+AUC_table_categories %>% 
+  head()
+```
+
+
+```{r}
+# Calculate correlation of AUCs on antibacterial drugs
+AUC_taxa_antibacterial_cor = AUC_table_categories %>% 
+  filter(compound_cat == "Antibacterial") %>% 
+  select(NT_code, prestwick_ID , AUC) %>% 
+  pivot_wider(names_from = NT_code, values_from = AUC) %>% 
+  column_to_rownames("prestwick_ID") %>% 
+  t() %>% 
+  dist() %>% 
+  as.matrix()
+
+# Calculate correlation of AUCs on non-antibacterial drugs
+AUC_taxa_nonantibacterial_cor = AUC_table_categories %>% 
+  filter(compound_cat == "non_antibacterial") %>% 
+  select(NT_code, prestwick_ID , AUC) %>% 
+  pivot_wider(names_from = NT_code, values_from = AUC) %>% 
+  column_to_rownames("prestwick_ID") %>% 
+  t() %>% 
+  dist() %>% 
+  as.matrix()
+
+# Combine antibacterials and non-antibacterials
+AUC_taxa_combdrugs_cor = AUC_table_categories %>% 
+  filter(compound_cat %in% c("Antibacterial", "non_antibacterial")) %>% 
+  select(NT_code, prestwick_ID , AUC) %>% 
+  pivot_wider(names_from = NT_code, values_from = AUC) %>% 
+  column_to_rownames("prestwick_ID") %>% 
+  t() %>% 
+  dist() %>% 
+  as.matrix()
+```
+
+# Calculate cophenetic distances
+```{r}
+# calculate
+cophenetic_raw = cophenetic.phylo(phylogeny_raw)
+
+# Filter cophenetic matrix
+# Bacteria with AUC data
+NT_IDs = AUC_table %>% 
+  pull(NT_code) %>% 
+  unique()
+
+cophenetic_filt = cophenetic_raw[rownames(cophenetic_raw) %in% NT_IDs, 
+                                 colnames(cophenetic_raw) %in% NT_IDs]
+```
+
+# Correlation between phylogeny and AUC matrices
+```{r}
+# Calculate correlation between effect of drug on bacterial growth with
+# the phylogenetic distances.
+# In other words, do closely related bacteria respond similarly to antibiotics
+# and non-antibiotics?
+
+ade4::mantel.rtest(dist(cophenetic_filt), 
+                   dist(AUC_taxa_antibacterial_cor), 
+                   9999)
+
+ade4::mantel.rtest(dist(cophenetic_filt), 
+                   dist(AUC_taxa_nonantibacterial_cor), 
+                   9999)
+```
+
+## Plot
+```{r}
+# Filter table of species annotation
+Species_annot_filt = species_annot %>% 
+  mutate(Gram = if_else(Gram == "neg", "Negative", "Positive"),
+         Pathogen = str_to_title(Pathogen), 
+         Gammaproteobacteria = if_else(Class == "Gammaproteobacteria" & Pathogen == "Pathogen", "Pathogen", "Gut Commensal"), 
+         Gammaproteobacteria = factor(Gammaproteobacteria, levels = c("Gut Commensal", "Pathogen"))) %>% 
+  select(NT_code, Species, Gammaproteobacteria, Phylum, Family) %>% 
+  filter(NT_code %in% NT_IDs)
+
+Species_annot_filt
+```
+
+```{r}
+# Create single df with all distances between species
+Cophenetic_long = cophenetic_filt %>% 
+  as.data.frame() %>% 
+  rownames_to_column("Species_1") %>% 
+  pivot_longer(-Species_1, names_to = "Species_2", values_to = "Cophenetic")
+
+Nonantibacterial_long = AUC_taxa_nonantibacterial_cor %>% 
+  as.data.frame() %>% 
+  rownames_to_column("Species_1") %>% 
+  pivot_longer(-Species_1, names_to = "Species_2", values_to = "Non_anti_dist")
+
+Antibacterial_long = AUC_taxa_antibacterial_cor %>% 
+  as.data.frame() %>% 
+  rownames_to_column("Species_1") %>% 
+  pivot_longer(-Species_1, names_to = "Species_2", values_to = "Anti_dist")
+
+# Add annotation of species
+Dists_long = full_join(Cophenetic_long, Nonantibacterial_long) %>%
+  full_join(Antibacterial_long) %>%
+  left_join(Species_annot_filt, by = join_by("Species_1" == "NT_code")) %>%
+  rename("Species_n1" = "Species", "Gammaproteobacteria_1" = "Gammaproteobacteria", "Family_1" = "Family") %>%
+  left_join(Species_annot_filt, by = join_by("Species_2" == "NT_code")) %>%
+  rename("Species_n2" = "Species", "Gammaproteobacteria_2" = "Gammaproteobacteria", "Family_2" = "Family") %>% 
+  mutate(Contrast_pathogen = case_when(Gammaproteobacteria_1 == "Pathogen" & Gammaproteobacteria_2 == "Pathogen" ~ "Pathogen vs. Pathogen",
+                                       Gammaproteobacteria_1 == "Gut Commensal" & Gammaproteobacteria_2 == "Gut Commensal" ~ "Commensal vs. Commensal",
+                                       TRUE ~ "Pathogen vs. Commensal"),
+         Contrast_family = case_when(Family_1 == Family_2 ~ "Same Family",
+                                     TRUE ~ "Different Family"))
+
+```
+
+## PcoA
+```{r}
+Phylum_colors = c(`Actinobacteria` = "#9ba4ca", `Bacteroidetes` = "#74ae29", 
+                  `Firmicutes` = "#A50F15", `Fusobacteria` = "#8001b0", 
+                  `Proteobacteria` = "darkorange", `Verrucomicrobia` = "pink1")
+
+```
+
+```{r}
+# PCoA based on Euclidean
+AUC_anti_PcoA_obj = cmdscale(AUC_taxa_antibacterial_cor, k = 4, eig = T, add = TRUE)
+
+
+# Data frame with PCo and sample data
+AUC_anti_PcoA = AUC_anti_PcoA_obj$points %>% 
+  as.data.frame() %>% 
+  rownames_to_column("NT_code") %>% 
+  left_join(Species_annot_filt)
+
+# PCo proportion of variance
+Anti_PC1 = round(AUC_anti_PcoA_obj$eig[1]/sum(AUC_anti_PcoA_obj$eig), 4)* 100
+Anti_PC2 = round(AUC_anti_PcoA_obj$eig[2]/sum(AUC_anti_PcoA_obj$eig), 4)* 100
+```
+
+```{r}
+# PCoA based on Euclidean
+AUC_nonanti_PcoA_obj = cmdscale(AUC_taxa_nonantibacterial_cor, k = 4, eig = T, add = TRUE)
+
+
+# Data frame with PCo and sample data
+AUC_nonanti_PcoA = AUC_nonanti_PcoA_obj$points %>% 
+  as.data.frame() %>% 
+  rownames_to_column("NT_code") %>% 
+  left_join(Species_annot_filt)
+
+# PCo proportion of variance
+Nonanti_PC1 = round(AUC_nonanti_PcoA_obj$eig[1]/sum(AUC_nonanti_PcoA_obj$eig), 4)* 100
+Nonanti_PC2 = round(AUC_nonanti_PcoA_obj$eig[2]/sum(AUC_nonanti_PcoA_obj$eig), 4)* 100
+```
+
+
+```{r}
+Fam_Anti_PCoA_plot = AUC_anti_PcoA %>% 
+  ggplot(aes(x = V1, y = V2, color = Phylum, shape = Gammaproteobacteria)) +
+  geom_point() +
+  coord_fixed() +
+  theme_light() +
+  scale_color_manual(values = Phylum_colors) +
+  scale_shape_manual(values = c(19, 8)) +
+  labs(x = str_glue("PCo1 ({pvar}%)", pvar = Anti_PC1),
+       y = str_glue("PCo2 ({pvar}%)", pvar = Anti_PC2))
+
+Fam_Anti_PCoA_plot
+```
+
+```{r}
+Fam_nonanti_PCoA_plot = AUC_nonanti_PcoA %>% 
+  ggplot(aes(x = V1, y = V2, color = Phylum, shape = Gammaproteobacteria)) +
+  geom_point() +
+  theme_light() +
+  scale_color_manual(values = Phylum_colors) +
+  scale_shape_manual(values = c(19, 8)) +
+  coord_fixed() +
+  labs(x = str_glue("PCo1 ({pvar}%)", pvar = Nonanti_PC1),
+       y = str_glue("PCo2 ({pvar}%)", pvar = Nonanti_PC2)) 
+
+Fam_nonanti_PCoA_plot
+```
+
+## Combine plots
+```{r fig.height=6, fig.width=12}
+Combined_PCA_phylum = ggpubr::ggarrange(Fam_Anti_PCoA_plot, 
+                                        Fam_nonanti_PCoA_plot,
+                                        labels = "AUTO",
+                                        common.legend = TRUE, 
+                                        legend = "bottom")
+
+Combined_PCA_phylum
+```
+
+```{r}
+# ggpubr::ggexport(Combined_PCA_phylum, 
+#          filename = file.path(figure_dir, "Fig_X_AUC_PCA_phylum.pdf"),
+#          width = 12, height = 6)
+```
+
+
+# AUC phylocorrelogram
+```{r}
+# Filter tree
+# List of tips to remove
+Removed_genomes = phylogeny_raw$tip.label[!(phylogeny_raw$tip.label %in% NT_IDs)]
+phylogeny_filter = drop.tip(phylogeny_raw, Removed_genomes)
+```
+
+```{r}
+# Create tables of AUC values for antibacterials and non-antibacterials
+
+#Filter AUC table
+Phylo_AUC_meta = AUC_table %>%
+  left_join(species_annot,  by = "NT_code") %>% 
+  mutate(compound_cat = case_when(target_species == "bacteria" ~ "Antibacterial", 
+                                  human_use == TRUE ~ "non_antibacterial", 
+                                  target_species %in% c("fungi", "human", "metazoan parasites", "viruses", "not a drug") ~ "non_antibacterial")) %>% 
+  filter(!is.na(compound_cat)) %>% 
+  select(NT_code, prestwick_ID, AUC, compound_cat)
+
+# Antibacterials
+Phylo_AUC_anti = Phylo_AUC_meta %>% 
+  filter(compound_cat == "Antibacterial") %>% 
+  pivot_wider(id_cols = c(NT_code), names_from = prestwick_ID, values_from = AUC) %>% 
+  column_to_rownames("NT_code") 
+
+# Remove cols with missing values
+Phylo_AUC_anti = Phylo_AUC_anti[ , colSums(is.na(Phylo_AUC_anti)) == 0]
+
+#Non antibacterials
+Phylo_AUC_non_anti = Phylo_AUC_meta %>% 
+  filter(compound_cat == "non_antibacterial") %>% 
+  pivot_wider(id_cols = c(NT_code), names_from = prestwick_ID, values_from = AUC) %>% 
+  column_to_rownames("NT_code")
+
+# Remove cols with missing values
+Phylo_AUC_non_anti = Phylo_AUC_non_anti[ , colSums(is.na(Phylo_AUC_non_anti)) == 0]
+
+# Create phylo4d objects
+Anti_phylo4d = phylo4d(phylogeny_filter, Phylo_AUC_anti)
+non_Anti_phylo4d = phylo4d(phylogeny_filter, Phylo_AUC_non_anti)
+```
+
+```{r}
+# calculate correlogram
+Anti_correlogram = phyloCorrelogram(Anti_phylo4d, 
+                                    trait = colnames(Anti_phylo4d@data),
+                                    n.points = 50)
+
+
+# Calculate the expected correlation under null hypothesis
+# Taken from source code here
+# https://github.com/fkeck/phylosignal/blob/master/R/correlogram.R
+Anti_correlogram_h0 = -1/(Anti_correlogram$n-1)
+
+# Convert to data frame
+# Add ranges of significance of correlation
+Anti_correlogram_df = Anti_correlogram$res %>% 
+  as.data.frame() %>% 
+  rename("phylo_dist" = "V1", "Cor" = "V4", "LCI" = "V2", "UCI" = "V3") %>% 
+  mutate(signif = case_when(LCI > Anti_correlogram_h0 ~ "Signif", 
+                            UCI < Anti_correlogram_h0 ~ "Signif", TRUE ~ "NS"))
+```
+
+```{r}
+# calculate correlogram
+non_Anti_correlogram = phyloCorrelogram(non_Anti_phylo4d, 
+                                        trait = colnames(non_Anti_phylo4d@data), 
+                                        n.points = 50)
+
+
+# Calculate the expected correlation under null hypothesis
+# Taken from source code here
+# https://github.com/fkeck/phylosignal/blob/master/R/correlogram.R
+non_Anti_correlogram_h0 = -1/(non_Anti_correlogram$n-1)
+
+# Convert to data frame
+# Add ranges of significance of correlation
+non_Anti_correlogram_df = non_Anti_correlogram$res %>% 
+  as.data.frame() %>% 
+  rename("phylo_dist" = "V1", "Cor" = "V4", "LCI" = "V2", "UCI" = "V3") %>% 
+  mutate(signif = case_when(LCI > non_Anti_correlogram_h0 ~ "Signif", 
+                            UCI < non_Anti_correlogram_h0 ~ "Signif", TRUE ~ "NS"))
+```
+
+```{r}
+# Plot
+# plot(Anti_correlogram)
+Anti_correlogram_plot = Anti_correlogram_df %>% 
+  as.data.frame() %>% 
+  ggplot() + 
+  geom_hline(yintercept = Anti_correlogram_h0, color = "darkgray") +
+  geom_point(aes(x = phylo_dist, y = Cor)) +
+  # geom_point(aes(x = phylo_dist, y = Cor, fill = signif), shape = 21, size = 0.8) +
+  # scale_fill_manual(values = c("white", "black")) +
+  # geom_line(aes(x = phylo_dist, y = LCI), linetype = "dashed") +
+  # geom_line(aes(x = phylo_dist, y = UCI), linetype = "dashed") +
+  theme_light() +
+  scale_x_continuous(limits = c(0, 0.86), breaks = seq(0, 1, 0.2)) +
+  scale_y_continuous(limits = c(-0.5, 0.5)) +
+  labs(x = "Phylogenetic distance", y = "Mantel correlation antibacterials", shape = "Significance") +
+  theme(legend.position = "none")
+
+# Anti_correlogram_plot
+```
+
+
+```{r}
+# Plot
+# plot(non_Anti_correlogram)
+non_Anti_correlogram_plot = non_Anti_correlogram_df %>% 
+  as.data.frame() %>% 
+  ggplot() + 
+  geom_hline(yintercept = non_Anti_correlogram_h0, color = "darkgray") +
+  geom_point(aes(x = phylo_dist, y = Cor)) +
+  # geom_point(aes(x = phylo_dist, y = Cor, fill = signif), shape = 21, size = 0.8) +
+  # scale_fill_manual(values = c("white", "black")) +
+  # geom_line(aes(x = phylo_dist, y = LCI), linetype = "dashed") +
+  # geom_line(aes(x = phylo_dist, y = UCI), linetype = "dashed") +
+  theme_light() +
+  scale_x_continuous(limits = c(0, 0.86), breaks = seq(0, 1, 0.2)) +
+  scale_y_continuous(limits = c(-0.5, 0.5)) +
+  labs(x = "Phylogenetic distance", y = "Mantel correlation non-antibacterials", shape = "Significance") +
+  theme(legend.position = "none")
+
+# non_Anti_correlogram_plot
+```
+
+```{r fig.height=4, fig.width=10}
+Correlogram_combined = ggpubr::ggarrange(Anti_correlogram_plot, 
+                                         non_Anti_correlogram_plot, 
+                                         align = "h")
+
+Correlogram_combined
+```
+
+```{r}
+# ggpubr::ggexport(Correlogram_combined, 
+#          filename = file.path(figure_dir, "Fig_X_AUC_correlogram.pdf"),
+#          width = 10, height = 4)
+```
+
+# Source data
+```{r}
+Source_ED3A = AUC_anti_PcoA %>% 
+  select(NT_code, PCo1 = V1, PCo2 = V2, Phylum, Gammaproteobacteria)
+
+Source_ED3B = AUC_nonanti_PcoA %>% 
+  select(NT_code, PCo1 = V1, PCo2 = V2, Phylum, Gammaproteobacteria)
+
+Source_ED3C = Anti_correlogram_df %>% 
+  as.data.frame() %>% 
+  select(phylo_dist, Cor)
+
+Source_ED3D = non_Anti_correlogram_df %>% 
+  as.data.frame() %>% 
+  select(phylo_dist, Cor)
+
+# write_tsv(Source_ED3A, file.path(Salmonella_dir, "Tables/source_data/Source_ED3A.tsv"))
+# write_tsv(Source_ED3B, file.path(Salmonella_dir, "Tables/source_data/Source_ED3B.tsv"))
+# write_tsv(Source_ED3C, file.path(Salmonella_dir, "Tables/source_data/Source_ED3C.tsv"))
+# write_tsv(Source_ED3D, file.path(Salmonella_dir, "Tables/source_data/Source_ED3D.tsv"))
+```
+
+

@@ -1,0 +1,397 @@
+---
+title: "AMR prediction"
+format: html
+---
+
+Jacobo de la Cuesta-Zuluaga. January 2024.
+
+The aim of this notebook is to run `amrfinder` on the genomes of pathogens and
+commensals, and then compare ther AMR repertoire.
+
+# Libraries
+```{r}
+library(tidyverse)
+library(ggpubr)
+library(conflicted)
+```
+
+```{r}
+conflicts_prefer(dplyr::filter)
+```
+
+
+# Directories
+```{r}
+base_dir = "/mnt/volume_1/dm_main/projects"
+
+# amr dir
+amr_dir = file.path(base_dir, "Salmonella_invasion_paper/Data/AMR_amrfinder")
+dir.create(amr_dir)
+
+# annotation dir
+annot_dir = file.path(base_dir, "Metabolic_overlap")
+
+# Fig dir
+figure_dir = file.path(base_dir, "Salmonella_invasion_paper/Figures")
+
+tables_dir = file.path(base_dir, "Salmonella_invasion_paper/Tables")
+```
+
+# AMR finder on all genomes
+## Bash script
+The following bash script takes as input a file with absolute paths of predicted
+proteins in fasta format and executes `armfinder`
+```
+#!/bin/bash
+
+# Check if file and output directory are provided
+if [ -z "$1" ] || [ -z "$2" ]
+then
+    echo "File or output directory not supplied. Usage: ./script.sh file_path output_directory"
+    exit 1
+fi
+
+# Check if file exists
+if [ ! -f "$1" ]
+then
+    echo "File does not exist."
+    exit 1
+fi
+
+# Check if output directory exists
+if [ ! -d "$2" ]
+then
+    echo "Output directory does not exist."
+    exit 1
+fi
+
+# Read each line in the file
+while IFS= read -r fasta_file
+do
+    # Check if file exists
+    if [ -f "$fasta_file" ]
+    then
+        # Get the base name of the file
+        base_name=$(basename "$fasta_file" .fasta)
+
+        # Run amrfinder on the file
+        amrfinder --protein "$fasta_file" --threads 10 --plus --ident_min 0.5 --coverage_min 0.5 --database /mnt/volume_2/dm_main_2/databases/Bakta/db/amrfinderplus-db/2023-09-26.1 > "$2/${base_name}.amrfinder"
+        # Run argnorm
+        argnorm amrfinderplus -i "$2/${base_name}.amrfinder" -o "$2/${base_name}.argnorm"
+    else
+        echo "$fasta_file does not exist."
+    fi
+done < "$1"
+
+```
+
+## Create genomes file
+```{r}
+# Write input file for bash script, one line at a time
+proteome_list = annot_dir %>% 
+  list.files(recursive = TRUE, pattern = ".faa", full.names = TRUE) %>% 
+  data.frame(Path = .) %>% 
+  mutate(Genome = basename(Path)) %>% 
+  group_by(Genome) %>% 
+  slice(1) %>% 
+  ungroup()
+
+proteome_file = file.path(amr_dir, "proteins.txt")
+
+# proteome_list %>%
+#   pull(Path) %>% 
+#   write_lines(file = proteome_file)
+```
+
+## Run script
+```{r}
+# Create command to run bash script
+conda_env = "bakta"
+arm_bulk_cmd = str_glue("conda activate {conda_env} && \\
+                        bash amrfinder_bulk.sh \\
+                        {prot_file} {out_dir}", 
+                        conda_env = conda_env,
+                        prot_file = proteome_file,
+                        out_dir = amr_dir)
+arm_bulk_cmd
+```
+
+# Load tables
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# List of harmonized files
+argnorm_files = amr_dir %>% 
+  list.files(full.names = TRUE, pattern = "argnorm") 
+
+# Load files
+harmonized_annot_list= argnorm_files %>% 
+  map(function(x) {
+    read_tsv(x, name_repair = "universal", show_col_types = FALSE) %>% 
+      select(-`...1`) %>% 
+      mutate(Genome = basename(x))
+    })
+
+# Identify and remove empty
+Non_empty_dfs = harmonized_annot_list %>% 
+  map_lgl(function(x) nrow(x) > 0)
+
+# Create single df
+harmonized_annot_raw = harmonized_annot_list[Non_empty_dfs] %>% 
+  map_df(function(x) x) %>% 
+  mutate(Genome = str_remove(Genome, ".faa.argnorm")) %>% 
+  relocate(Genome)
+```
+
+```{r}
+# Print
+harmonized_annot_raw
+```
+
+```{r}
+# Clean table and fix names
+# Add filtering step base on sequence coverage and ID
+# Note that amrfinder was run with 50%
+Cov_threshold = 50
+ID_threshold = 50
+
+harmonized_annot = harmonized_annot_raw %>% 
+  select(NT_ID = Genome, ID = Protein.identifier, Gene = Gene.symbol, Description = Sequence.name,
+         Type = Element.type, Subtype = Element.subtype, R_Class = Class, 
+         R_Subclass = Subclass, ARO, Drug = CONFERS.RESISTANCE.TO.IMMEDIATE.DRUG.CLASS, 
+         Drug_category = OVERALL.CATEGORY.OF.DRUG.CLASS, 
+         Coverage = ..Coverage.of.reference.sequence, Identity = ..Identity.to.reference.sequence) %>% 
+  mutate(NT_ID = if_else(NT_ID == "C_difficile_630", "NT5083", NT_ID)) %>% 
+  filter(NT_ID != "NT5068dn",
+         Identity >= ID_threshold & Coverage > Cov_threshold)
+
+harmonized_annot %>% 
+  head()
+```
+
+
+```{r}
+# Classification of species into Pathogen or commensal
+Species_annot_raw = file.path(base_dir, "Salmonella_invasion_paper/Data/Drug_hits_patho_comm/gut_species_magic40.csv") %>% 
+  read_csv2() %>% 
+  mutate(Phylum = factor(Phylum, levels = c("Actinobacteria", "Firmicutes", "Fusobacteria", 
+                                            "Bacteroidetes", "Verrucomicrobia", "Proteobacteria"))) %>% 
+  arrange(Phylum) %>%
+  mutate(NT_code = fct_inorder(NT_code)) %>% 
+  filter(NT_code != "NT5085")
+
+# Fix Species names
+Species_annot = Species_annot_raw %>%  
+  mutate(Gram = if_else(Gram == "neg", "Negative", "Positive"),
+         Pathogen = str_to_title(Pathogen), 
+         Gammaproteobacteria = if_else(Class == "Gammaproteobacteria" & Pathogen == "Pathogen", "Pathogen", "Gut Commensal"), 
+         Gammaproteobacteria = factor(Gammaproteobacteria, levels = c("Gut Commensal", "Pathogen")),
+         Abb_genus = str_sub(Species, 1, 1),
+         Epithet = word(Species, 2, -1), 
+         Abb_Species = str_c(Abb_genus, Epithet, sep = ". ")) %>% 
+  select(-Abb_genus, -Epithet) %>% 
+  rename("NT_ID" = "NT_code") %>% 
+  relocate(Abb_Species, .after = NT_ID)
+
+```
+
+```{r}
+# Combine tables, add species names to AMR table
+# Determine which genomes had no AMR gene predicted
+Combined_AMR_df = left_join(Species_annot, harmonized_annot, by = join_by(NT_ID)) %>% 
+  filter(!is.na(Pathogen)) %>% 
+  mutate(AMR_prediction = case_when(NT_ID == "NT5084" ~ "Not processed",
+                                    is.na(ID) ~ "No AMR Predicted",
+                                    TRUE ~ "Predicted"))
+```
+
+
+# Names and genome size
+```{r, message=FALSE}
+# Count the number of proteins per genome
+N_prots_list = proteome_list$Path %>% 
+  map_dbl(function(x) {
+    read_tsv(x, col_names = FALSE, show_col_types = FALSE) %>% 
+      filter(str_detect(X1, "^>")) %>%
+      nrow()
+  })
+  
+```
+
+```{r}
+# Add to AMR df
+N_prots = bind_cols(proteome_list, N_prots = N_prots_list) %>% 
+  mutate(NT_ID = str_remove(Genome, ".faa")) %>% 
+  mutate(NT_ID = if_else(NT_ID == "C_difficile_630", "NT5083", NT_ID)) %>% 
+  select(NT_ID, N_prots)
+
+Combined_AMR_prots = left_join(Combined_AMR_df, N_prots)
+```
+
+
+```{r}
+# Print
+Combined_AMR_prots %>% 
+  head()
+```
+
+
+
+
+# Summaries and Hypothesis testing
+```{r}
+# Number of genomes with prediction
+Combined_AMR_prots %>% 
+  group_by(NT_ID) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  count(AMR_prediction)
+```
+
+```{r}
+# Do pathogens have more AMR genes than commensals?
+# Do not count virulence genes
+AMR_by_genome = Combined_AMR_prots %>% 
+  filter(NT_ID != "NT5084") %>% 
+  select(NT_ID,Abb_Species, Pathogen, Gammaproteobacteria, Type, ID, N_prots) %>% 
+  pivot_wider(id_cols = c(NT_ID, Pathogen, Gammaproteobacteria, Abb_Species, N_prots), names_from = Type, values_from = ID) %>% 
+  select(-`NA`) %>% 
+  mutate(across(c(AMR, STRESS, VIRULENCE), lengths)) %>% 
+  mutate(RESISTANCE = AMR+STRESS,
+         Adj_AMR = (AMR/N_prots)*100,
+         Adj_STRESS = (STRESS/N_prots)*100,
+         Adj_VIRULENCE = (VIRULENCE/N_prots)*100,
+         Adj_RESISTANCE = (RESISTANCE/N_prots)*100)
+
+# Mean values
+AMR_by_genome %>% 
+  group_by(Gammaproteobacteria) %>% 
+  summarize(mean_RES_unadj = mean(RESISTANCE),
+            mean_RES_adj = mean(Adj_RESISTANCE),
+            sd_adj_RESISTANCE  = sd(Adj_RESISTANCE)) %>% 
+  arrange(Gammaproteobacteria)
+
+AMR_by_genome %>% 
+  rstatix::t_test(RESISTANCE ~ Gammaproteobacteria,
+                  alternative = "greater", ref.group = "Pathogen") 
+
+AMR_by_genome %>% 
+  rstatix::t_test(Adj_RESISTANCE ~ Gammaproteobacteria, 
+                  alternative = "greater", ref.group = "Pathogen")
+```
+
+
+```{r}
+# Plot
+AMR_dotplot = AMR_by_genome %>% 
+  ggplot(aes(x = Gammaproteobacteria, y = Adj_RESISTANCE, color = Gammaproteobacteria)) +
+  geom_jitter(width = 0.1, alpha = 0.85) +
+  scale_color_manual(values = c("Gut Commensal" = "steelblue2", "Pathogen" = "darkorange2")) +
+  stat_summary(geom = "pointrange", fun.data = "mean_se", 
+               shape = 3, color = "firebrick3", linewidth = 0.9) +
+  theme_light() +
+  labs(x = "", y = "AMR and Stress genes encoded (%)") +
+  theme(legend.position = "none") +
+  coord_cartesian(ylim = c(0, 0.6)) +
+  stat_compare_means(method = "t.test", 
+                     label = "..p.signif..", 
+                     label.x = 1.5, label.y = 0.58,
+                     method.args = list(alternative = "greater"), size =7)
+
+AMR_dotplot
+```
+
+
+```{r}
+# Do pathogens have more efflux genes than commensals?
+Efflux_by_genome = Combined_AMR_prots %>% 
+  filter(NT_ID != "NT5084") %>% 
+  select(NT_ID,Abb_Species, Pathogen, Gammaproteobacteria, R_Class, ID, N_prots) %>% 
+  pivot_wider(id_cols = c(NT_ID, Pathogen, Gammaproteobacteria, Abb_Species, N_prots), 
+              names_from = R_Class, values_from = ID) %>% 
+  select(NT_ID,Abb_Species, Pathogen, Gammaproteobacteria, EFFLUX,N_prots) %>% 
+  mutate(EFFLUX = lengths(EFFLUX)) %>% 
+  mutate(Adj_EFFLUX = (EFFLUX/N_prots)*100)
+
+# Mean values
+Efflux_by_genome %>% 
+  group_by(Gammaproteobacteria) %>% 
+  summarize(mean_EFFLUX = mean(EFFLUX),
+            mean_adj_EFFLUX = mean(Adj_EFFLUX),
+            sd_adj_EFFLUX  = sd(Adj_EFFLUX)) %>% 
+  arrange(Gammaproteobacteria)
+
+Efflux_by_genome %>% 
+  rstatix::t_test(EFFLUX ~ Gammaproteobacteria, 
+                  alternative = "greater", ref.group = "Pathogen")
+
+Efflux_by_genome %>% 
+  rstatix::t_test(Adj_EFFLUX ~ Gammaproteobacteria, 
+                  alternative = "greater", ref.group = "Pathogen")
+```
+
+
+```{r}
+# Plot
+Efflux_dotplot = Efflux_by_genome %>% 
+  ggplot(aes(x = Gammaproteobacteria, y = Adj_EFFLUX, color = Gammaproteobacteria)) +
+  geom_jitter(width = 0.1, alpha = 0.85) +
+  scale_color_manual(values = c("Gut Commensal" = "steelblue2", "Pathogen" = "darkorange2")) +
+  stat_summary(geom = "pointrange", fun.data = "mean_se", 
+               shape = 3, color = "firebrick3", linewidth = 0.9) +
+  theme_light() +
+  labs(x = "", y = "Efflux genes encoded (%)") +
+  theme(legend.position = "none") +
+  coord_cartesian(ylim = c(0, 0.23)) +
+  stat_compare_means(method = "t.test", 
+                     label = "..p.signif..", 
+                     label.x = 1.5, label.y = 0.223, 
+                     method.args = list(alternative = "greater"), size = 7)
+
+Efflux_dotplot
+```
+
+```{r fig.height=4, fig.width=6}
+# Combine plot
+Combined_AMR_Plot = ggpubr::ggarrange(AMR_dotplot,
+                                      Efflux_dotplot, 
+                                      align = "h", widths = c(0.975, 1))
+Combined_AMR_Plot
+```
+
+```{r}
+# ggpubr::ggexport(Combined_AMR_Plot, 
+#          filename = file.path(figure_dir, "Fig_X_AMR_Patho_Comm.pdf"),
+#          width = 6, height = 4)
+```
+
+# Source data
+```{r}
+Source_ED3E = AMR_by_genome %>% 
+  select(NT_ID, Spp = Abb_Species, Gammaproteobacteria, Norm_resistance = Adj_RESISTANCE)
+
+Source_ED3F = Efflux_by_genome %>% 
+  select(NT_ID, Spp = Abb_Species, Gammaproteobacteria, Norm_efflux = Adj_EFFLUX)
+
+# write_tsv(Source_ED3E, file.path(base_dir,
+#                                  "Salmonella_invasion_paper/Tables/source_data/Source_ED3E.tsv"))
+# 
+# write_tsv(Source_ED3F, file.path(base_dir,
+#                                  "Salmonella_invasion_paper/Tables/source_data/Source_ED3F.tsv"))
+
+```
+
+
+
+# Genomes table
+```{r}
+Genome_IDs = "/mnt/volume_1/dm_main/projects/Genomes/Genome_clean_list.txt" %>% 
+  read_tsv()
+
+Genomes_df = AMR_by_genome %>% 
+  left_join(Genome_IDs) %>% 
+  select(NT_ID, Abb_Species,Strain_name, Group = Gammaproteobacteria,
+         GenBank_ID, Tax_ID, Assembly_ID, Unassembled, Other_source)
+
+# Genomes_df %>%
+#   write_tsv(file.path(tables_dir, "Genomes_df.tsv"))
+```
+

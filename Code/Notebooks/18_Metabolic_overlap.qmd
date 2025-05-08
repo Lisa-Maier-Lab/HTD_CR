@@ -1,0 +1,343 @@
+---
+title: "Salmonella and COM20 metabolic overlap"
+format: html
+---
+
+Jacobo de la Cuesta-Zuluaga. July 2023.
+The aim of this notebook is to explore the metabolic overlap and
+capabilities of Salmonella and the members of COM20
+
+```{r}
+library(tidyverse)
+library(conflicted)
+library(ape)
+library(ggpubr)
+```
+
+
+```{r}
+# Solve conflicts
+conflict_prefer("filter", "dplyr")
+```
+
+
+# Load tables
+
+```{r}
+base_dir = "/mnt/volume_1/dm_main/projects"
+
+Salmonella_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper"
+figure_dir = file.path(Salmonella_dir, "Figures")
+```
+
+
+```{r}
+# COM20 species
+COM20_NT = c("NT5001", "NT5002", "NT5003", "NT5004", "NT5006", "NT5009", 
+             "NT5011", "NT5017", "NT5024", "NT5025", "NT5026", "NT5032", 
+             "NT5037", "NT5038","NT5046", "NT5048", "NT5071", "NT5072", 
+             "NT5073", "NT5076")
+
+Genomes_annotation = file.path(base_dir, "Genomes/tormes_samples_metadata.tsv") %>% 
+  read_tsv()
+
+# Retain info of COM20, E. coli, Salmonella and C. diff
+Retained_annotation = Genomes_annotation %>% 
+  filter(Samples %in% COM20_NT | 
+           str_detect(Samples, "C_difficile_630") | 
+           str_detect(Samples, "S_typhimurium_SL1344") | 
+           str_detect(Description, "Escherichia") ) %>% 
+  select(NT_ID = Samples, Description) %>% 
+  mutate(Description = case_when(NT_ID == "C_difficile_630" ~ "Clostridium difficile 630",
+                                 NT_ID == "S_typhimurium_SL1344" ~ "Salmonella enterica subsp. enterica serovar Typhimurium SL1344",
+                                 TRUE ~ Description), 
+         E_coli = if_else(str_detect(Description, "Escherichia"), TRUE, FALSE))
+
+# Limit to Salmonella and COM21
+# NT5078 corresponds to E. coli ED1a 
+Retained_annotation = Retained_annotation %>% 
+  filter((E_coli == FALSE | NT_ID == "NT5078"),
+         NT_ID != "C_difficile_630")
+
+E_coli_NT = Retained_annotation %>% 
+  filter(E_coli)
+
+# Phylogeny
+phylo_tree_raw = file.path(base_dir, "Genomes/Phylogeny/Proteome_phylophlan/RAxML_bestTree.Proteome_refined.tre") %>% 
+  read.tree()
+
+# Metabolic overlap table
+MO_raw = file.path(base_dir, "Metabolic_overlap/PhyloMInt_output.tsv") %>% 
+  read_tsv(col_select = c(1:4))
+
+colnames(MO_raw) = c("Species_1","Species_2", "Competition", "Complementarity")
+
+# Filter tables
+MO_filtered = MO_raw %>% 
+  filter(Species_1 %in% Retained_annotation$NT_ID,
+         Species_2 %in% Retained_annotation$NT_ID)
+```
+
+
+```{r}
+Salmonella_Taxonomy = data.frame(NT_ID = c("S_typhimurium_SL1344", "NT5078"), 
+                                 Name = c("Salmonella Typhimurium", "Escherichia coli"))
+
+#Taxonomy
+COM20_Taxonomy = file.path(base_dir, "Amplicon_Seq_References/COM20_GTDB_Taxonomy.txt") %>% 
+  read_tsv() %>% 
+  rename("NT_ID" = "ID") %>% 
+  mutate(Name = str_remove(GTDB_Taxonomy, ".*s__")) %>% 
+  select(NT_ID, Name) %>% 
+  bind_rows(Salmonella_Taxonomy) %>% 
+  mutate(Name = str_replace(Name, "[a-z].* ", ". "))
+```
+
+```{r}
+Phylum_colors = c(`Collinsella aerofaciens` = "#9BA4CA", `Eggerthella lenta` = "#353E64",
+                  `Bacteroides fragilis` = "#E4F4CF", `Bacteroides thetaiotaomicron` = "#BFE590",
+                  `Bacteroides uniformis` = "#9BD651", `Phocaeicola vulgatus` = "#74AE29",
+                  `Parabacteroides merdae` = "#4A6F1A", `Enterocloster bolteae` = "#FEE5D9",
+                  `Clostridium_P perfringens` = "#FCBBA1", `Erysipelatoclostridium ramosum` = "#FC9272",
+                  `Lacrimispora saccharolytica` = "#FB6A4A", `Bariatricus comes` = "#DE2D26",
+                  `Dorea formicigenerans` = "#A50F15", `Agathobacter rectalis` = "#FEEDDE",
+                  `Roseburia intestinalis` = "#FDD0A2", `Ruminococcus_B gnavus` = "#FDAE6B",
+                  `Streptococcus parasanguinis` = "#FD8D3C", `Streptococcus salivarius` = "#E6550D",
+                  `Veillonella parvula` = "#A63603", `Fusobacterium nucleatum` = "#8001B0",
+                  `Escherichia coli` = "black", `Salmonella Typhimurium` = "gray50")
+
+names(Phylum_colors)  = names(Phylum_colors) %>% 
+  str_replace("[a-z].* ", ". ")
+
+by_phylum = names(Phylum_colors)
+```
+
+
+# Compare metabolic overlap and complementarity of all species
+```{r}
+# Metabolic overlap
+MO_filtered_named = MO_filtered %>% 
+  filter(Species_1 != Species_2) %>% 
+  left_join(COM20_Taxonomy, 
+            by = join_by(Species_1 == NT_ID)) %>% 
+  left_join(COM20_Taxonomy, 
+            by = join_by(Species_2 == NT_ID),
+            suffix = c("_1", "_2"))
+```
+
+# Box plot 
+```{r}
+MO_Plot_df = MO_filtered_named %>% 
+  mutate(Name_1 = fct_reorder(Name_1, Competition, mean), 
+         Name_2 = factor(Name_2, levels = by_phylum),
+         Sp_shape = if_else(Name_2 %in% c("S. Typhimurium", "E. coli"), "Eco_Sm", "Com20"))
+
+MO_Plot_df %>% 
+  filter(Name_1 == "C. perfringens") %>% 
+  arrange(Sp_shape)
+```
+
+```{r}
+Competition_boxplot = MO_Plot_df %>% 
+  filter(Sp_shape == "Com20") %>% 
+  ggplot() +
+  geom_boxplot(aes(x = Name_1, y = Competition),
+               color = "gray25",
+               outlier.size = 1.5,
+               outlier.alpha = 0.5) +  
+  geom_point(aes(x = Name_1, y = Competition, fill = Name_2), 
+             data = filter(MO_Plot_df, Sp_shape == "Eco_Sm"),
+             shape = 23, 
+             position = position_dodge(width = 0.75),
+             alpha = 0.85) +
+  scale_fill_manual(values = c("E. coli" = "black", "S. Typhimurium" = "darkorange2")) +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 7,  face = "italic"),
+        legend.text = element_text(size = 7, face = "italic"),
+        legend.margin = margin(0.1,1,0.1,0.1, "cm")) +
+  labs(x = "Species", y = "Metabolic Competition", fill = "Enterobacteriaceae")
+
+
+Complementarity_boxplot = MO_Plot_df %>% 
+  filter(Sp_shape == "Com20") %>% 
+  ggplot() +
+  geom_boxplot(aes(x = Name_1, y = Complementarity),
+               color = "gray25",
+               outlier.size = 1.5,
+               outlier.alpha = 0.5) +  
+  geom_point(aes(x = Name_1, y = Complementarity, fill = Name_2), 
+             data = filter(MO_Plot_df, Sp_shape == "Eco_Sm"),
+             shape = 23, 
+             position = position_dodge(width = 0.75),
+             alpha = 0.8) +
+  scale_fill_manual(values = c("E. coli" = "black", "S. Typhimurium" = "darkorange2")) +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 7,  face = "italic"),
+        legend.text = element_text(size = 7, face = "italic"),
+        legend.margin = margin(0.1,1,0.1,0.1, "cm")) +
+  labs(x = "Species", y = "Metabolic Complementarity", fill = "Enterobacteriaceae")
+
+MO_boxplot = ggarrange(Competition_boxplot, Complementarity_boxplot, 
+                       ncol = 2, 
+                       common.legend = TRUE,
+                       legend = "bottom", 
+                       align = "h")
+
+MO_boxplot
+```
+
+```{r fig.height=4, fig.width=8}
+# ggexport(MO_boxplot,
+#          filename = file.path(figure_dir, "Fig_3_Metabolic_overlap_boxplot.pdf"),
+#          height = 4,
+#          width = 8)
+```
+
+# Source data
+```{r}
+Source_complete = MO_Plot_df %>% 
+  rename("NT_ID_Spp1" = "Species_1", "Spp_1" = "Name_1",
+         "NT_ID_Spp2" = "Species_2", "Spp_2" = "Name_2") %>% 
+  select(NT_ID_Spp1, Spp_1, NT_ID_Spp2, Spp_2, Competition, Complementarity)
+
+Source_ED7D = Source_complete %>% 
+  select(-Complementarity)
+
+Source_ED7E = Source_complete %>% 
+  select(-Competition)
+
+# write_tsv(Source_ED7D, file.path(Salmonella_dir, "Tables/source_data/Source_ED7D.tsv"))
+# write_tsv(Source_ED7E, file.path(Salmonella_dir, "Tables/source_data/Source_ED7E.tsv"))
+```
+
+
+# Other pathogens
+```{r}
+# Load pathogen MO table
+MO_pathogens_raw = file.path(base_dir, "Metabolic_overlap/Pathogens/PhyloMInt_Pathogens.tsv") %>% 
+  read_tsv(col_select = c(1:4))
+
+colnames(MO_pathogens_raw) = c("Species_1", "Species_2", "Competition", "Complementarity")
+
+# Create table with ID and names of pathogens
+Pathogen_IDs = c("Escherichia coli" = "NT12192",
+                 "Klebsiella pneumoniae" = "LM0054",
+                 "Shigella flexneri" = "NT14114",
+                 "Yersinia enterocolitica" = "LM0112", 
+                 "Yersinia pseudotuberculosis" = "NT14113",
+                 "Vibrio cholerae" = "NT14112", 
+                 "Salmonella Typhimurium" = "S_typhimurium_SL1344")
+
+# Write species name in short format
+Pathogens_df = data.frame(NT_ID = Pathogen_IDs) %>% 
+  rownames_to_column("Name") %>% 
+  mutate(Name = str_replace(Name, "[a-z].* ", "\\."))
+```
+
+```{r}
+# Clean pathogen table and join with Names
+MO_pathogens = MO_pathogens_raw %>% 
+  filter(Species_1 != Species_2) %>% 
+    filter(Species_1 != Species_2) %>% 
+  left_join(Pathogens_df, 
+            by = join_by(Species_1 == NT_ID)) %>% 
+  left_join(Pathogens_df, 
+            by = join_by(Species_2 == NT_ID),
+            suffix = c("_1", "_2"))
+
+
+```
+
+## Compare metabolic overlap and complementarity of all pathogens
+```{r}
+Pathogen_colors = c("E.coli"  = "black", 
+                    "K.pneumoniae" = "#482576FF", 
+                    "Y.enterocolitica" = "#31688EFF", 
+                    "Y.pseudotuberculosis" = "#1FA188FF", 
+                    "V.cholerae" =  "#7AD151FF", 
+                    "S.Typhimurium" = "darkorange2", 
+                    "S.flexneri" = "gray40")
+```
+
+```{r}
+STm_Competition = MO_filtered_named %>% 
+  filter(Species_1 == "S_typhimurium_SL1344") %>% 
+  pull(Competition) %>% 
+  mean()
+
+STm_Complementarity = MO_filtered_named %>% 
+  filter(Species_1 == "S_typhimurium_SL1344") %>% 
+  pull(Complementarity) %>% 
+  mean()
+```
+
+
+
+```{r fig.height=4, fig.width=6}
+Competition_scatter_pathogens = MO_pathogens %>% 
+  mutate(Name_1 = fct_reorder(Name_1, Competition, mean)) %>% 
+  ggplot(aes(x = Name_1, y = Competition, color = Name_2)) +
+  geom_jitter(height = 0, width = 0.1, alpha = 0.70) +
+  stat_summary(fun.data = mean_se, fun.args = list(mult = 1), geom = "pointrange",
+               color = "firebrick3", shape = 3, linewidth = 0.9) +
+  scale_color_manual(values = Pathogen_colors) +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8,  face = "italic"),
+        legend.text = element_text(size = 7, face = "italic"),
+        legend.margin = margin(0.1,1,0.1,0.1, "cm")) +
+  labs(x = "Species", y = "Metabolic Competition", color = "Contrast") +
+  geom_hline(yintercept = STm_Competition, linetype = "dashed") +
+  guides(color=guide_legend(ncol=1,byrow=TRUE))
+
+
+# Complementatity
+Complementarity_scatter_pathogens = MO_pathogens %>% 
+  mutate(Name_1 = fct_reorder(Name_1, Complementarity, mean)) %>% 
+  ggplot(aes(x = Name_1, y = Complementarity, color = Name_2)) +
+  geom_jitter(height = 0, width = 0.1, alpha = 0.70) +
+  stat_summary(fun.data = mean_se, fun.args = list(mult = 1), geom = "pointrange",
+               color = "firebrick3", shape = 3, linewidth = 0.9) +
+  scale_color_manual(values = Pathogen_colors) +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8,  face = "italic"),
+        legend.text = element_text(size = 7, face = "italic"),
+        legend.margin = margin(0.1,1,0.1,0.1, "cm")) +
+  labs(x = "Species", y = "Metabolic Competition", color = "Contrast") +
+  geom_hline(yintercept = STm_Complementarity, linetype = "dashed") +
+  guides(color=guide_legend(ncol=1,byrow=TRUE))
+
+
+MO_Scatter_pathogens = ggarrange(Competition_scatter_pathogens, Complementarity_scatter_pathogens, 
+                       ncol = 2, 
+                       common.legend = TRUE,
+                       legend = "right", 
+                       align = "h")
+
+MO_Scatter_pathogens
+```
+
+```{r fig.height=3, fig.width=6}
+# ggexport(MO_Scatter_pathogens, 
+#          filename = file.path(figure_dir, "Fig_X_Pathogen_overlap.pdf"), 
+#          height = 3, 
+#          width = 6)
+```
+
+
+# Source data
+```{r}
+Source_complete_patho = MO_pathogens %>% 
+  rename("NT_ID_Spp1" = "Species_1", "Spp_1" = "Name_1",
+         "NT_ID_Spp2" = "Species_2", "Spp_2" = "Name_2") %>% 
+  select(NT_ID_Spp1, Spp_1, NT_ID_Spp2, Spp_2, Competition, Complementarity)
+
+Source_ED7B = Source_complete_patho %>% 
+  select(-Complementarity)
+
+Source_ED7C = Source_complete_patho %>% 
+  select(-Competition)
+
+# write_tsv(Source_ED7B, file.path(Salmonella_dir, "Tables/source_data/Source_ED7B.tsv"))
+# write_tsv(Source_ED7C, file.path(Salmonella_dir, "Tables/source_data/Source_ED7C.tsv"))
+```
+
