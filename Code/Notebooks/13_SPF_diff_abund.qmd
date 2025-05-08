@@ -1,0 +1,285 @@
+---
+title: "Mice 16S rRNA differential abundance"
+format: html
+---
+
+Jacobo de la Cuesta-Zuluaga. June 2023.
+The aim of this notebook is to assess differences abundance of taxa in mice
+between days 0 and 6
+
+# Libraries
+```{r}
+library(tidyverse)
+library(conflicted)
+library(GUniFrac)
+library(vegan)
+library(PERFect)
+library(rstatix)
+```
+
+```{r}
+conflicts_prefer(dplyr::filter())
+conflicts_prefer(purrr::map())
+```
+
+```{r}
+# Seed
+set.seed(2112)
+```
+
+
+# Paths
+```{r}
+# Project directories
+base_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper/"
+SPF_16S_dir = "/mnt/volume_1/dm_main/projects/23_05_Anne_Jacobo_Mice/dada2_out"
+ref_dir = "/mnt/volume_1/dm_main/projects/Amplicon_Seq_References/"
+
+
+# ASV table
+SPF_asv_raw = file.path(SPF_16S_dir, "2023_05_SPF_ASV_table.tsv") %>% 
+  read_tsv()
+
+# taxonomy table
+SPF_full_tax_raw = file.path(SPF_16S_dir, "2023_05_SPF_taxonomy_full.tsv") %>% 
+  read_tsv()
+
+SPF_full_tax =  SPF_full_tax_raw %>% 
+  select(ID, Name, Class, Order, Family, Genus)
+
+# Phylogeny
+SPF_tree_raw =  file.path(SPF_16S_dir, "2023_05_SPF_tree.tre") %>% 
+  ape::read.tree()
+
+# Mice metadata
+SPF_metadata = "/mnt/volume_1/dm_main/projects/23_05_Anne_Jacobo_Mice/tables/SPF_metadata_filt.tsv" %>% 
+  read_tsv() %>% 
+  filter(!(drug_2 %in% c("Avermectin B1"))) %>% 
+  select(Sample = file_name, Mouse_ID= internal_number, 
+         Treatment = drug_2, Day = days_after_treatment) #"Streptomycin" 
+
+# Output dir
+figure_dir = file.path(base_dir, "Figures")
+tab_dir = file.path(base_dir, "Tables")
+tab_dir %>% 
+  dir.create(tab_dir)
+```
+
+
+# Filter tables 
+```{r}
+Treatment_levels = c("DMSO", "Chlorpromazine", "Clomifene",
+                     "Clotrimazole", "Terfenadine", "Zafirlukast") #"Streptomycin"
+
+
+Treatment_colors =  c("DMSO" = "#01a7c2",
+                      # "Streptomycin" = "orange3",
+                      "Chlorpromazine" = "chartreuse4",
+                      "Clomifene" = "#ee7674",
+                      "Clotrimazole" = "#cbc5ea",
+                      "Terfenadine" = "#183642",
+                      "Zafirlukast" = "#73628a")
+
+
+# Order taxa by phylum
+by_treatment = names(Treatment_colors)
+```
+
+```{r}
+# Use the same samples for days zero and 6
+# Samples at day 6
+SPF_six_metadata = SPF_metadata %>% 
+  filter(Day == 6 & Treatment %in% Treatment_levels)
+
+# Samples at day 0
+SPF_zero_metadata = SPF_metadata %>% 
+  filter(Day == 0 & 
+           Treatment %in% Treatment_levels &
+           Mouse_ID %in% SPF_six_metadata$Mouse_ID)
+
+SPF_zs_metadata = bind_rows(SPF_zero_metadata, SPF_six_metadata) 
+
+
+SPF_zs_ASV = SPF_asv_raw %>% 
+  filter(Sample %in% SPF_zs_metadata$Sample)
+```
+
+```{r}
+# Filter tables using PERFect
+# ASV table
+# Run PERFect filtering
+# First simultaneous and use those p-values for permutation
+SPF_filt_sim = SPF_zs_ASV %>% 
+  column_to_rownames("Sample") %>%
+  as.data.frame() %>% 
+  PERFect_sim(X = .,
+              rollmean = FALSE)
+
+# Run PERFect filtering
+SPF_filt_perm = SPF_zs_ASV %>% 
+  column_to_rownames("Sample") %>% 
+  PERFect_perm(X = .,
+               algorithm = "full", 
+               rollmean = FALSE,
+               pvals_sim = SPF_filt_sim)
+
+
+# Convert to data frame
+SPF_perf_ASV = SPF_filt_perm$filtX %>% 
+  as.data.frame() %>% 
+  rownames_to_column("Sample")
+
+SPF_perf_ASV %>% 
+  dim()
+
+# Contribution of the retained ASVs to the total microbiome 
+SPF_zs_ASV %>% 
+  column_to_rownames("Sample") %>% 
+  decostand(method = "total") %>% 
+  select(any_of(colnames(SPF_perf_ASV))) %>% 
+  rowSums() %>% 
+  summary()
+```
+
+```{r}
+# Obtain CLR transformation
+# Using the PERFect filtered table
+SPF_zs_clr = SPF_perf_ASV  %>% 
+  column_to_rownames("Sample") %>% 
+  zCompositions::cmultRepl(output = "p-counts", z.delete = FALSE) %>% 
+  decostand(method = "clr") %>% 
+  rownames_to_column("Sample")
+```
+
+```{r}
+Treatment_levels = c("DMSO","Chlorpromazine", "Clomifene",
+                     "Clotrimazole", "Terfenadine", "Zafirlukast") 
+
+# Split species table by species
+
+# Join clr and metadata tables
+# Long format
+SPF_zs_clr_long = left_join(SPF_zs_clr, SPF_zs_metadata) %>% 
+  pivot_longer(-c(Sample, Mouse_ID, Treatment, Day), 
+               names_to = "Species", values_to = "clr")
+
+SPF_zs_clr_long %>% 
+  head()
+
+# Separate d0 and d6 into distinct columns
+SPF_zs_clr_wide = SPF_zs_clr_long %>% 
+  pivot_wider(id_cols = c(Mouse_ID, Treatment, Species), 
+              names_from = Day, 
+              values_from = clr, 
+              names_prefix = "clr_d") %>% 
+  arrange(Species, Treatment) %>% 
+  mutate(Treatment = factor(Treatment, 
+                            levels = Treatment_levels))
+
+SPF_zs_clr_wide %>% 
+  head()
+
+# Generate a data frame per species in all treatments
+# With two columns corresponding to the clr at days 0 and 6
+SPF_zs_clr_list = SPF_zs_clr_wide %>% 
+  group_split(Species)
+```
+
+
+
+# Differential abundance 
+# See https://www.nicholas-ollberding.com/post/ancova-for-analyzing-pre-post-microbiome-studies/
+
+```{r}
+# Function to run ANCOVA of pre/post abundances
+robust_lm <- function(my_df){
+  # Names of species for out table
+  Species = unique(my_df$Species)
+  
+  # Run lm
+  m <- lm(clr_d6 ~ clr_d0 + Treatment, data = my_df)
+  
+  # Perform coefficient test of robust regression
+  m_out = lmtest::coeftest(m, vcov. = sandwich::vcovHC(m))
+  
+  # Create output data frame
+  m_out_df = as.data.frame(m_out[,]) %>% 
+    rownames_to_column("Term") %>% 
+    mutate(Species = Species)
+  
+  colnames(m_out_df) = c("Term", "Estimate", "Std_error", 
+                         "t_value", "p_value", "Species")
+  
+  # Return
+  m_out_df
+}
+
+# Run on each ASV
+SPF_lm = map_df(SPF_zs_clr_list, function(df){
+  robust_lm(df)
+})
+
+# The estimate represents the change in clr-transformed abundance
+# Of each microbe on each treatment compared to the control after adjusting
+# for baseline abundance
+# Log2FoldChange is just a change of base of the estimate for plots
+SPF_lm_df = SPF_lm %>% 
+  filter(!(Term %in% c("clr_d0", "(Intercept)"))) %>% 
+  rename("Treatment" = "Term") %>% 
+  mutate(Treatment = str_remove(Treatment, "Treatment"),
+         log2FoldChange = log2(exp(Estimate)),
+         Species = str_replace(Species, "[a-z].* ", "\\. ")) %>% 
+  arrange(Treatment, p_value) %>% 
+  group_by(Treatment) %>% 
+  mutate(p_adjusted = p.adjust(p_value, method = "BH"),
+         Treatment = factor(Treatment, levels = Treatment_levels)) %>% 
+  ungroup() %>% 
+  mutate(significant = p_adjusted < 0.1,
+         Species = fct_reorder(Species, log2FoldChange, .fun = median, .desc = TRUE))
+
+```
+
+```{r}
+# Volcano plot of COM20 members in each community
+SPF_lm_volcano = SPF_lm_df %>%
+  ggplot(aes(x = log2FoldChange, y = -log10(p_adjusted), shape = significant)) +
+  geom_hline(yintercept = 1, color = "darkgray", linetype = "dashed") +
+  geom_vline(xintercept = 0, color = "darkgray", linetype = "dashed") +
+  geom_point(size = 2, alpha = 0.65) +
+  scale_shape_manual(values = c("TRUE" = 23, "FALSE" = 21)) +
+  theme_light() +
+  facet_wrap(~Treatment, ncol = 2) +
+  labs(x = "Log2 fold-change (clr-transformed abundance)", y = "-log10(Adj. P)") 
+
+
+SPF_lm_volcano
+```
+
+```{r}
+# # Export plots
+# ggpubr::ggexport(SPF_lm_volcano,
+#                  filename = file.path(figure_dir, "Fig_7_SPF_lm_volcano.pdf"),height = 6, width = 7)
+
+```
+# Source data
+```{r}
+Source_ED10E = SPF_lm_df %>%
+  select(Drug = Treatment, ASV = Species, Regression_coefficient = log2FoldChange,
+         P_value = p_value, Adjusted_P = p_adjusted)
+
+# write_tsv(Source_ED10E, file.path(base_dir, "Tables/source_data/Source_ED10E.tsv"))
+```
+
+
+# Export tables
+```{r}
+SPF_lm_export = SPF_lm_df %>% 
+  left_join(SPF_full_tax, by = join_by(Species == ID)) %>% 
+  select(Species, Name, Treatment, log2FoldChange, p_adjusted, significant, Class, Order, Family, Genus) %>% 
+  arrange(Treatment, log2FoldChange)
+```
+
+```{r}
+# SPF_lm_export %>% 
+#   write_tsv(file.path(tab_dir, "SPF_diffabund.tsv"))
+```

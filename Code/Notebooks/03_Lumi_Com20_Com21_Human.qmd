@@ -1,0 +1,446 @@
+---
+title: "Lumi of human communities treated with drugs"
+format: html
+---
+
+Jacobo de la CUesta-Zuluaga.
+
+The aim of this notebook is to compare the growth of S. Tm in Com20, Com21 and
+human-stool derived communities after treatment.
+
+*General Requirements*
+A xlsx file named Tab1.xlsx with Exp_Plate, Replicate, Community 
+A xlsx file named Tab2.xlsx with Plate_Design, Position,Condition, Drug_Conc, Community and Border 
+A folder called "Raw Data" with Tecan Files. All Raw files should only contain Sheets with data, no empty sheets. All Sheet names need to end with the number of the Plate_Design
+R script called readTecanMeasurements.R
+  
+
+# Libraries
+
+
+```{r}
+library(tidyverse)
+library(openxlsx)
+library(ggpubr)
+library(conflicted)
+```
+
+
+
+```{r}
+# Solve conflicts
+conflict_prefer("filter", "dplyr")
+```
+
+
+# Load tables 
+
+
+```{r}
+# Directories
+base_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper"
+data_dir = file.path(base_dir, "Data/Taiyeb_data/fig26_bis_29/")
+figure_dir = file.path(base_dir, "Figures")
+tables_dir = file.path(base_dir, "Tables")
+```
+
+
+```{r}
+# importing the com20/21 datasets
+Com20_OD_lumi_raw = file.path(base_dir, "/Data/OD_Lumi_Selection/Com20_OD_lumi_select.tsv") %>%
+  read_tsv() %>% 
+  mutate(Drug = str_replace(Drug, "Tiratricole", "Tiratricol"))
+
+Com21_OD_lumi_raw = file.path(base_dir, "/Data/OD_Lumi_Selection/Com21_OD_lumi_select.tsv") %>%
+  read_tsv() %>% 
+  mutate(Drug = str_replace(Drug, "Tiratricole", "Tiratricol"))
+
+# Organize tables
+data_com20_raw = Com20_OD_lumi_raw %>%
+  mutate(log2FC_lumi = log2(rel_Lumi)) %>% 
+  group_by(Drug, Conc) %>%
+  summarise(log2FC_lumi = mean(log2FC_lumi)) %>%
+  ungroup() %>%
+  select(Condition = Drug, Conc, log2FC_lumi) %>% 
+  mutate(drug_conc = str_c(Condition, Conc, sep = " "))
+
+data_com21_raw = Com21_OD_lumi_raw %>%
+  select(-c(rel_OD, Com)) %>%
+  rename("Condition" = "Drug") %>%
+  pivot_wider(id_cols = c(Condition, Class, Conc),
+              values_from = rel_Lumi,
+              names_from = Replicate,
+              names_prefix = "relative_Lumi_")
+```
+
+```{r}
+# Additional drugs
+# Read table and adjust names
+Add_meds_raw = file.path(base_dir, "Data/OD_Lumi_Selection/Donor_Invasion_Missing.xlsx") %>% 
+  readxl::read_xlsx()
+
+# Adjust table
+Add_meds = Add_meds_raw %>% 
+  arrange(Donor, Drug, Conc) %>% 
+  select(Condition = Drug, Conc, COM = Donor, signal_norm = rel_Lumi, Replicate) %>% 
+  group_by(COM, Condition, Conc) %>% 
+  mutate(signal_norm = log2(signal_norm)) %>% 
+  summarise(log2FC_stool = mean(signal_norm)) %>% 
+  mutate(drug_conc = str_c(Condition, Conc, sep = " ")) %>% 
+  select(Condition, Conc, COM, log2FC_stool, drug_conc) %>% 
+  ungroup()
+```
+
+```{r}
+# Source
+source(file.path(data_dir, 'readTecanMeasurements.R'))
+
+```
+
+
+# Prepare tables 
+```{r}
+# Inhibitory compounds
+Inhibitors = c("Trimethoprim", "Ofloxacin", "Nalidixic acid", "Oxolinic acid",
+               "Avermectin B1", "Avermectin")
+```
+
+```{r}
+# Create var with durg concentration combination
+data_com20 <- data_com20_raw %>% 
+  mutate(drug_conc = paste(Condition, Conc, sep = " ")) %>% 
+  filter(!(Condition %in% Inhibitors))
+
+# Calculate mean normalized OD and filter conditions with issues
+# Anne said something went wrong with Ofloxacin and Oxolinic acid
+# Avermectin B1 degraded in the COM21 experiment and also in the human stool samples experiment probably
+data_com21 <- data_com21_raw %>% 
+  mutate(Condition = str_replace(Condition, "Clomifen", "Clomiphene"),
+         log2FC_lumi_21 = log2(relative_Lumi_1)/3 + log2(relative_Lumi_2)/3 + log2(relative_Lumi_3)/3) %>%
+  # filter(Condition != "Ofloxacin" & Condition != "Oxolinic acid" & Condition != "Avermectin B1") %>% 
+  filter(!(Condition %in% Inhibitors)) %>% 
+  mutate(drug_conc = paste(Condition, Conc, sep = " ")) %>%
+  select(7,8) %>% 
+  arrange(drug_conc)
+
+
+# create folders for Results
+# dir.create("Results")
+
+# load files, scripts and annotations
+Raw_Data_files <- list.files(file.path(data_dir,'Raw Data'), full.names = TRUE)
+Runs <- read.xlsx(file.path(data_dir, 'Tab1_v1.xlsx'), 1)
+Runs <- Runs %>% 
+  modify_if(is.factor, as.character)  
+
+Layout <- NULL
+for (i in 1:5) {
+  Layout <- rbind(Layout, read.xlsx(file.path(data_dir,'Tab2_v2.xlsx'), i))
+}
+
+```
+
+# Reading and combining your data 
+```{r}
+Raw_Reads_init <- NULL
+
+#loop through all files in the Raw Data folder and combine them
+
+# for (i in 1:length(Raw_Data_files)){
+#   Raw_Reads <- rbind(Raw_Reads, readTecanMeasurements(paste0('./Raw Data/',Raw_Data_files[i])))
+# }
+
+for (i in 1:length(Raw_Data_files)){
+  Raw_Reads_init <- rbind(Raw_Reads_init, readTecanMeasurements(Raw_Data_files[i]))
+}
+
+
+Raw_Reads <- Raw_Reads_init %>% 
+  mutate(Exp_Plate = paste(Exp, Plate_Design, sep='_')) %>% 
+  merge(Runs,by="Exp") %>% 
+  merge(Layout, by=c('identifier', 'Plate_Design'))
+
+```
+
+
+# Data Analysis 
+
+```{r}
+
+# remove all Border values
+
+Raw_Reads_filter <- Raw_Reads %>% 
+  filter(!Border)
+
+# normalise by "COM_control" control per column
+Raw_Reads_norm <- Raw_Reads_filter %>% 
+  mutate(col = identifier %% 100)
+
+Raw_Reads_final <- Raw_Reads_norm %>%
+  dplyr::group_by(Exp_Plate, col) %>% 
+  mutate(signal_norm = (Luminescence/Luminescence[Condition=='COM_control'])) %>%
+  ungroup()
+
+# write.csv(Raw_Reads, file = "./Results/Raw_Reads.csv")
+
+
+```
+
+# Plots
+
+```{r}
+# making a dataframe with mean OD normalized
+
+Raw_Reads_stool <- Raw_Reads_final %>% 
+  select(Replicate, Condition, Conc, COM, signal_norm) %>% 
+  filter(Condition!= 'COM_control' & Condition != 'DMSO' & !(Condition %in% (Inhibitors)))
+
+# 25 drug_conc were tested for LM0128 - 35. Additionally, 10 drug_conc were tested for LM0131 - 33. 
+# So, Raw_reads_stool dataframe below should have 25*8 + 10*3 = 230 rows
+# These drug_conc are chosen because they have abs(log2FC) > 2 in the volcano plot and they dont inhibit S Tm 
+
+
+Raw_Reads_plot_df_B <- Raw_Reads_stool %>% 
+  group_by(Condition, Conc, COM) %>% 
+  mutate(log2FC_stool = mean(log2(signal_norm))) %>% 
+  filter(Replicate == 1) %>% 
+  select(Condition, Conc, COM, log2FC_stool) %>% 
+  mutate(drug_conc = paste0(Condition, " ", Conc)) 
+
+# Append new med table
+Raw_Reads_plot_df <- Raw_Reads_stool %>% 
+  group_by(Condition, Conc, COM) %>% 
+  mutate(signal_norm = log2(signal_norm)) %>% 
+  summarise(log2FC_stool = mean(signal_norm)) %>% 
+  select(Condition, Conc, COM, log2FC_stool) %>% 
+  mutate(drug_conc = paste0(Condition, " ", Conc)) %>% 
+  ungroup() %>% 
+  filter(Condition != "Simvastatin") %>% 
+  bind_rows(Add_meds)
+
+# write.csv(Raw_Reads_stool, "log2FC_stool.csv")
+
+```
+
+
+```{r}
+# correlation plot 
+data_total_20 <- inner_join(data_com20, Raw_Reads_plot_df)
+data_total_21 <- inner_join(data_com21, Raw_Reads_plot_df, by = "drug_conc") 
+```
+
+```{r}
+# Use same conditions for COM20 and COM21
+Shared_conditions = base::intersect(data_total_20$drug_conc,
+                                    data_total_21$drug_conc)
+
+
+data_total_20_filt = data_total_20 %>% 
+  filter(drug_conc %in% Shared_conditions) %>% 
+  filter(!(Condition %in%c("Diacerein", "Felodipine", "Methotrexate"))) %>% 
+  arrange(COM) %>% 
+  group_by(COM) %>% 
+  mutate(Donor = cur_group_id(),
+         Donor = str_c("Donor", Donor, sep = " ")) %>% 
+  ungroup() %>% 
+  add_count(drug_conc) %>% 
+  filter(n == 8)
+
+
+data_total_21_filt = data_total_21 %>% 
+  filter(drug_conc %in% Shared_conditions) %>% 
+  filter(!(Condition %in%c("Diacerein", "Felodipine", "Methotrexate"))) %>% 
+  arrange(COM) %>% 
+  group_by(COM) %>% 
+  mutate(Donor = cur_group_id(),
+         Donor = str_c("Donor", Donor, sep = " ")) %>% 
+  ungroup() %>% 
+  add_count(drug_conc) %>% 
+  filter(n == 8)
+
+setdiff(data_total_21_filt$drug_conc, data_total_20_filt$drug_conc)
+```
+
+```{r}
+data_total_20_filt %>% 
+  count(drug_conc)
+
+data_total_20_filt %>% 
+  count(Condition)
+```
+
+
+```{r}
+# Plots for LM0128, 29, 30, 34, 35. Only 25 conditions
+# png("fig24.png", width=1200, height=700)
+corr_facet_com20 = data_total_20_filt %>% 
+  # filter(COM %in% c("LM0128", "LM0129", "LM0130", "LM0134", "LM0135")) %>% 
+  ggplot(aes(x = log2FC_lumi, y = log2FC_stool)) + 
+  geom_point(size = 2, alpha = 0.75) +
+  geom_smooth(method=lm, se = FALSE, col = "firebrick") +
+  # stat_cor(method = "spearman", cor.coef.name = "rho") +
+  labs(x = "Log2 fold change (S.Tm luminescence) Com20", 
+       y = "Log2 fold change (S.Tm luminescence) stool-derived community") +
+  facet_wrap(~Donor, nrow = 2) +
+  theme_light() +
+  coord_fixed(xlim = c(-2, 4.5), ylim = c(-2, 6)) +
+  scale_x_continuous(breaks=seq(-2, 6, 2)) +
+  scale_y_continuous(breaks=seq(-2, 6, 2)) +
+  theme(axis.text.x = element_text(size = 9), 
+        axis.text.y = element_text(size = 9)) 
+corr_facet_com20
+
+# png("fig25.png", width=1200, height=700)
+corr_facet_com21 = data_total_21_filt %>%
+  # filter(COM %in% c("LM0128", "LM0129", "LM0130", "LM0134", "LM0135")) %>% 
+  ggplot(aes(x = log2FC_lumi_21, y = log2FC_stool)) + 
+  geom_point(size = 2, alpha = 0.75) +
+  geom_smooth(method=lm, se = FALSE, col = "firebrick") +
+  # stat_cor(method = "spearman", cor.coef.name = "rho") +
+  labs(x = "Log2 fold change (S.Tm luminescence) Com21", 
+       y = "Log2 fold change (S.Tm luminescence) stool-derived community") +
+  facet_wrap(~Donor, nrow = 2) +
+  theme_light() +
+  coord_fixed(xlim = c(-2, 4.5), ylim = c(-2, 6)) +
+  scale_x_continuous(breaks=seq(-2, 6, 2)) +
+  scale_y_continuous(breaks=seq(-2, 6, 2)) +
+  theme(axis.text.x = element_text(size = 9), 
+        axis.text.y = element_text(size = 9)) 
+
+corr_facet_com21
+```
+
+
+```{r fig.height=8, fig.width=8}
+# Print and save
+corr_facet_combined = ggarrange(corr_facet_com20, corr_facet_com21, 
+                                align = "hv",
+                                nrow = 2)
+
+corr_facet_combined
+
+# ggexport(corr_facet_combined,
+#          filename = file.path(figure_dir, "Fig_5_Lumi_Human_COM20_21_facet.pdf"),
+#          height = 8,
+#          width = 8)
+```
+# Source data
+```{r}
+Source_ED9E_top = data_total_20_filt %>% 
+  select(Subject = COM, Drug = Condition, Concentration = Conc, log2FC_stool,
+         log2FC_lumi_Com20 = log2FC_lumi) 
+
+Source_ED9E_bottom = data_total_21_filt %>% 
+  select(Subject = COM, Drug = Condition, Concentration = Conc, log2FC_stool,
+         log2FC_lumi_Com21 = log2FC_lumi_21)
+
+Source_ED9E = full_join(Source_ED9E_top, Source_ED9E_bottom, 
+                               by = join_by(Subject, Drug, Concentration, log2FC_stool))
+
+# write_tsv(Source_ED9E, file.path(base_dir, "Tables/source_data/Source_ED9E.tsv"))
+```
+
+
+
+# Correlation change COM20 vs COM21
+Create a plot showing the change in the correlation between
+
+```{r}
+# Calculate overall correlation of each human derived community
+# Once for COM20 and once for COM21
+cor_df_COM20 = data_total_20_filt %>% 
+  group_by(COM) %>% 
+  rstatix::cor_test(vars = c("log2FC_lumi", "log2FC_stool"), method = "spearman") %>% 
+  rstatix::adjust_pvalue() %>% 
+  select(COM, cor, p.adj) %>% 
+  mutate(Synth = "COM20", 
+         Significance = if_else(p.adj < 0.05, "Significant", "Non-significant"))
+
+cor_df_COM21 = data_total_21_filt %>% 
+  group_by(COM) %>% 
+  rstatix::cor_test(vars = c("log2FC_lumi_21", "log2FC_stool"), method = "spearman") %>% 
+  rstatix::adjust_pvalue() %>% 
+  select(COM, cor, p.adj) %>% 
+  mutate(Synth = "COM21", 
+         Significance = if_else(p.adj < 0.05, "Significant", "Non-significant"))
+
+# Join
+cor_df_COM = bind_rows(cor_df_COM20, cor_df_COM21)
+```
+
+
+```{r}
+cor_df_COM %>% 
+  group_by(Synth) %>% 
+  summarise(mean_cor = mean(cor))
+
+cor_df_COM %>% 
+  group_by(Synth) %>% 
+  count(Significance)
+```
+
+
+# Plot
+```{r}
+cor_df_COM %>% 
+  filter(Synth == "COM21") %>% 
+  arrange(COM) %>% 
+  mutate(Donor = str_c("D", row_number())) %>% 
+  arrange(desc(cor)) %>% 
+  pull(Donor)
+```
+
+```{r fig.height=6, fig.width=4}
+COM20_21_cor_diff = cor_df_COM %>% 
+  ggplot(aes(x = Synth, y = cor)) +
+  geom_line(aes(group=COM), color = "gray") +
+  geom_point() +
+  stat_summary(fun.data = mean_se, fun.args = list(mult = 1), geom = "pointrange",
+               color = "firebrick3", alpha = 0.9, shape = 3) +
+  theme_light() +
+  theme(legend.position = "bottom") +
+  labs(x = "Synthetic community", y = "Correlation coefficient")+
+  coord_cartesian(ylim = c(0.3, 0.9))
+
+COM20_21_cor_diff
+
+# ggexport(COM20_21_cor_diff,
+#          filename = file.path(figure_dir, "Fig_5_Lumi_Human_COM20_21_correlation.pdf"),
+#          height = 6,
+#          width = 4)
+
+```
+
+# Source data
+```{r}
+Source_3C = cor_df_COM %>% 
+  select(Subject = COM, Correlation = cor, 
+         Adjusted_P = p.adj, Community_comparison = Synth)
+
+# write_tsv(Source_3C, file.path(base_dir, "Tables/source_data/Source_3C.tsv"))
+```
+
+
+# Table
+```{r}
+Out_Com20 = data_total_20_filt %>% 
+  arrange(COM, Condition, Conc) %>% 
+  group_by(COM) %>% 
+  mutate(Donor = cur_group_id()) %>% 
+  ungroup() %>% 
+  select(COM, Donor, Condition, Conc, drug_conc, matches("log2"))
+
+Out_Com21 = data_total_21_filt %>% 
+  arrange(COM, Condition, Conc) %>% 
+  group_by(COM) %>% 
+  mutate(Donor = cur_group_id()) %>% 
+  ungroup() %>% 
+  select(COM, Donor, Condition, Conc, drug_conc, matches("log2"))
+
+Out_combined = full_join(Out_Com20, Out_Com21,
+          by = join_by(COM, Donor, Condition, Conc, drug_conc, log2FC_stool)) %>% 
+  select(Donor, Condition, Conc, log2FC_lumi_Com20= log2FC_lumi, log2FC_lumi_Com21 = log2FC_lumi_21, log2FC_stool)
+
+# write_tsv(Out_combined, file.path(tables_dir, "Com20-21_Stool_Lumi.tsv"))
+
+```

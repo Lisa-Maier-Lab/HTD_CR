@@ -1,0 +1,127 @@
+---
+title: "Selection of Drugs"
+format: html
+---
+
+Jacobo de la Cuesta Zuluaga.
+
+The aim of this notebook is to streamline and unify the list of compounds
+for downstream analyses.
+
+# Libraries
+```{r}
+library(tidyverse)
+library(conflicted)
+```
+
+```{r}
+conflicts_prefer(dplyr::filter)
+```
+
+
+# Load tables
+```{r}
+base_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper/Data/OD_Lumi_Selection/"
+
+list.files(base_dir)
+
+OD_Lumi_raw = file.path(base_dir,
+                        "Luminescence_OD_Com20_Com21_Invasion_Dx_Selection.xlsx") %>% 
+  readxl::read_xlsx()
+
+Dx_list = file.path(base_dir, "Drugs_streamlined.xlsx") %>% 
+  readxl::read_xlsx(sheet = 2, .name_repair = "universal") %>% 
+  select(MIC = MICS, 
+         Invasion_Com20 = INVASION_STM_COM20,
+         Invasion_Com21 = INVASION_STM_COM21,
+         Invasion_patho = INVASION_OTHER_PATHOGENS, 
+         Stool = STOOL_DERIVED_STM_INVASION, 
+         Mice = MICE)
+```
+
+# Drug counts per experiment
+```{r}
+# Com20 invasion selection
+Com20_invasion_dx = Dx_list %>% 
+  select(Invasion_Com20) %>% 
+  drop_na() %>% 
+  pull(Invasion_Com20)
+
+# Drugs with data
+Com20_invasion_lumi = OD_Lumi_raw %>% 
+  select(Drug) %>% 
+  drop_na() %>% 
+  distinct() %>% 
+  pull(Drug)
+
+# N drugs
+Com20_invasion_dx %>% 
+  length()
+
+# Total number of drugs with data for Com20
+OD_Lumi_raw %>% 
+  filter(Com == "Com20") %>% 
+  count(Drug)
+
+OD_Lumi_raw %>% 
+  filter(Com == "Com20", Drug %in% Com20_invasion_dx) %>% 
+  count(Drug)
+
+# Differences
+setdiff(Com20_invasion_dx, Com20_invasion_lumi)
+setdiff(Com20_invasion_lumi, Com20_invasion_dx)
+```
+
+```{r}
+# Com21 invasion selection
+Com21_invasion_dx = Dx_list %>% 
+  select(Invasion_Com21) %>% 
+  drop_na() %>% 
+  pull(Invasion_Com21)
+
+# Drugs with data
+Com21_invasion_lumi = OD_Lumi_raw %>% 
+  select(Drug) %>% 
+  drop_na() %>% 
+  distinct() %>% 
+  pull(Drug)
+
+# N drugs
+Com21_invasion_dx %>% 
+  length()
+
+# Total number of drugs with data for Com21
+OD_Lumi_raw %>% 
+  filter(Com == "Com21") %>% 
+  count(Drug)
+
+OD_Lumi_raw %>% 
+  filter(Com == "Com21", Drug %in% Com21_invasion_dx) %>% 
+  count(Drug)
+
+# Differences
+setdiff(Com21_invasion_dx, Com21_invasion_lumi)
+setdiff(Com21_invasion_lumi, Com21_invasion_dx)
+```
+
+# Filter tables and write
+```{r}
+# Com20
+# Com20_OD_lumi = OD_Lumi_raw %>% 
+#   filter(Com == "Com20", Drug %in% Com20_invasion_dx)
+# 
+# Com20_OD_lumi %>% 
+#   write_tsv(file = file.path(base_dir, "Com20_OD_lumi_select.tsv"))
+```
+
+
+```{r}
+# Com21
+# Com21_OD_lumi = OD_Lumi_raw %>% 
+#   filter(Com == "Com21", Drug %in% Com21_invasion_dx)
+# 
+# Com21_OD_lumi %>% 
+#   write_tsv(file = file.path(base_dir, "Com21_OD_lumi_select.tsv"))
+```
+
+

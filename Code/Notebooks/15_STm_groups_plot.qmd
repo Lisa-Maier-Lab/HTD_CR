@@ -1,0 +1,284 @@
+---
+title: "Table of treatment classification"
+format: html
+---
+
+Jacobo de la Cuesta-Zuluaga. June 2023.
+The aim of this script is to generate a clean version of the table
+of treatment category based on lumi confidence intervals for the paper.
+For the original table used in the analyses, see the `05a_Colonization_bdiv.R`
+script in the COM20_picrust project.
+
+
+# Libraries
+
+```{r}
+library(tidyverse)
+library(rstatix)
+library(conflicted)
+```
+
+
+```{r}
+# Solve conflicts
+conflict_prefer("filter", "dplyr")
+```
+
+```{r}
+# Set seed
+set.seed(2112)
+```
+
+# Load data
+```{r}
+# Directories
+base_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper/"
+data_dir = file.path(base_dir, "Data/Taiyeb_data")
+tables_dir = file.path(base_dir, "Tables")
+figure_dir = file.path(base_dir, "Figures")
+```
+
+```{r}
+# OD Lumi file
+Com20_OD_lumi_raw = file.path(base_dir, "/Data/OD_Lumi_Selection/Com20_OD_lumi_select.tsv") %>% 
+  read_tsv()
+
+Combined_OD_lumi = Com20_OD_lumi_raw %>% 
+  select(Condition = Drug, Conc, Replicate, OD_norm = rel_OD, signal_norm = rel_Lumi) %>% 
+  mutate(Treatment = str_c(Condition, Conc, sep = "_"))
+  
+Combined_OD_lumi
+```
+
+```{r}
+# Drugs inhibiting Salmonella
+inhibitors = c("Trimethoprim", "Ofloxacin", "Nalidixic acid", "Oxolinic acid", 
+               "Avermectin B1", "Avermectin")
+```
+
+
+# Identify treatments with increased lumi
+```{r}
+# Identify condition/conc combinations that have an increased luminescence
+# Since the number of replicates is low and the number of treatments is high
+# I will select treatments based on the confidence interval of the mean lumi
+# instead of doing a one-way t-test.
+
+# Filter treatments that result in a very low OD
+# Remove lower 10% of OD values
+Mean_OD = Combined_OD_lumi %>% 
+  group_by(Treatment) %>% 
+  summarise(mean_OD = mean(OD_norm))
+
+
+OD_percentiles = quantile(Mean_OD$mean_OD, 
+                          na.rm = TRUE, 
+                          probs = c(0.1, 0.5, 0.9))
+
+Treatment_OD_filt = Mean_OD %>% 
+  filter(mean_OD > 0.20)
+```
+
+```{r}
+# Table of treatments excluded from analysis
+metadata_table_exluded = Combined_OD_lumi %>% 
+  mutate(Excluded = case_when(Condition %in% inhibitors ~ "Salmonella inhibitor",
+                              !(Treatment %in% c(Treatment_OD_filt$Treatment, "Control"))  ~ "Low OD",
+                              TRUE ~ NA))
+
+
+metadata_table_exluded
+```
+
+```{r}
+# Calculate confidence intervals of the mean
+# Classify treatments depending on whether the confidence interval encompasses 
+# a set of threshold values
+Low_lumi_threshold = 0.5
+Up_lumi_threshold = 2
+
+
+# Confidence intervals of Lumi
+Lumi_CI = metadata_table_exluded %>% 
+  group_by(Treatment, Excluded) %>% 
+  get_summary_stats(type = "mean_ci") %>% 
+  filter(variable %in% c("signal_norm", "OD_norm")) %>% 
+  ungroup() %>% 
+  mutate(variable = str_replace(variable, "signal", "luminescence"),
+         Left_ci = mean - (ci/2),
+         Right_ci = mean + (ci/2)) %>%
+  separate_wider_delim(Treatment, delim = "_", names = c("Condition", "Concentration"), cols_remove = FALSE)
+
+# Check
+Lumi_CI %>% 
+  filter(!is.na(Excluded))
+```
+
+
+```{r}
+# Colonization = case_when(Left_ci < Low_lumi_threshold & Right_ci < Low_lumi_threshold ~ "Salmonella-restricting",
+#                                   Left_ci > Up_lumi_threshold & Right_ci > Up_lumi_threshold ~ "Salmonella-favouring",
+#                                   TRUE ~ "No effect")
+# Make wide table
+Salmonella_Lumi_CI = Lumi_CI %>% 
+  pivot_wider(id_cols = c(Condition, Concentration, Treatment, Excluded, n), 
+              names_from = variable, values_from = c(mean, ci, Left_ci, Right_ci)) %>% 
+  mutate(Colonization = case_when(Left_ci_luminescence_norm < Low_lumi_threshold & 
+                                    Right_ci_luminescence_norm < Low_lumi_threshold ~ "Salmonella-restricting",
+                                  Left_ci_luminescence_norm > Up_lumi_threshold & 
+                                    Right_ci_luminescence_norm > Up_lumi_threshold ~ "Salmonella-favouring",
+                                  TRUE ~ "No effect"),
+         Pathogen = "Salmonella") %>% 
+  select(Condition, Concentration, Pathogen, Excluded, Colonization, n, matches("luminescence"), matches("OD"), Treatment)
+```
+
+# Export table 
+```{r}
+# Salmonella_Lumi_CI %>%
+#   write_tsv(file.path(tables_dir, "Salmonella_Lumi_OD_CI.tsv"))
+```
+
+# Figures
+
+```{r fig.width=5, fig.height=5}
+Colonization_OD_jitter = Salmonella_Lumi_CI %>% 
+  mutate(Colonization = factor(Colonization, levels =  c("Salmonella-favouring", "Salmonella-restricting", "No effect"))) %>% 
+  filter(is.na(Excluded)) %>% 
+  ggplot(aes(x = Colonization, y = mean_OD_norm)) +
+  geom_jitter(width = 0.1, height = 0, alpha = 0.5) +
+  stat_summary(fun.data = mean_se, fun.args = list(mult = 1), geom = "pointrange",
+               color = "firebrick3", shape = 3, linewidth = 0.9) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  theme_light() +
+  labs(x = "Colonization", y = "Relative OD 578nm of community") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+Colonization_lumi_jitter = Salmonella_Lumi_CI %>% 
+  mutate(Colonization = factor(Colonization, levels =  c("Salmonella-favouring", "Salmonella-restricting", "No effect"))) %>% 
+  filter(is.na(Excluded)) %>% 
+  ggplot(aes(x = Colonization, y = log2(mean_luminescence_norm))) +
+  geom_jitter(width = 0.1, height = 0, alpha = 0.5) +
+  stat_summary(fun.data = mean_se, fun.args = list(mult = 1), geom = "pointrange",
+               color = "firebrick3", shape = 3, linewidth = 0.9) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  theme_light() +
+  labs(x = "Colonization", y = "Log2(fold change S. Tm luminescence)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+Colonization_jitter = ggpubr::ggarrange(Colonization_lumi_jitter, 
+                                        Colonization_OD_jitter, 
+                                        align = "h")
+```
+
+```{r fig.width=5, fig.height=5}
+Colonization_jitter 
+
+# ggpubr::ggexport(Colonization_jitter, 
+#          filename = file.path(figure_dir, "Fig_S3_Colonization_groups.pdf"), 
+#          width = 5, height = 5)
+```
+
+# Source data
+```{r}
+Source_OD_Lumi = Salmonella_Lumi_CI %>% 
+  select(Drug = Condition, Concentration, Colonization, mean_luminescence_norm, mean_OD_norm) %>% 
+  mutate(Colonization = case_when(Colonization == "Salmonella-favouring" ~ "S.Tm-favoring",
+                                  Colonization == "Salmonella-restricting" ~ "S.Tm-restricting",
+                                  TRUE ~ Colonization))
+
+Source_2A = Source_OD_Lumi %>% 
+  select(-mean_OD_norm)
+
+Source_2B = Source_OD_Lumi %>% 
+  select(-mean_luminescence_norm)
+
+# write_tsv(Source_2A, file.path(base_dir, "Tables/source_data/Source_2A.tsv"))
+# write_tsv(Source_2B, file.path(base_dir, "Tables/source_data/Source_2B.tsv"))
+```
+
+
+# Plot
+```{r}
+Colonization_palette = c("S. Tm-favoring" = "#AF3800",
+                         "S. Tm-restricting" = "#379634",
+                         "No effect" = "#8B89A9",
+                         "Not meassured" = "gray95")
+
+#Transform table
+# Fix group levels
+Plot_lumi_df = Salmonella_Lumi_CI %>% 
+  filter(!(Condition %in% c("Trimethoprim", "Ofloxacin", "Nalidixic acid", "Oxolinic acid"))) %>% 
+  complete(Condition, Concentration) %>% 
+  mutate(Concentration = factor(Concentration, 
+                                levels = c("2.5", "5", "10", 
+                                           "20", "40", "80", "160")),
+         Colonization = case_when(str_detect(Colonization, "favouring") ~ "S. Tm-favoring",
+                                  str_detect(Colonization, "restricting") ~ "S. Tm-restricting",
+                                  is.na(Colonization) ~ "Not meassured",
+                                  TRUE ~ Colonization), 
+         Colonization = factor(Colonization, 
+                               levels = c("S. Tm-favoring","S. Tm-restricting","No effect","Not meassured")),
+         Excluded_alpha = if_else(is.na(Excluded), 1, 0.5)) %>% 
+  arrange(Condition, Concentration)
+
+Min_conc = Plot_lumi_df %>% 
+  mutate(Concentration = as.numeric(as.character(Concentration))) %>% 
+  arrange(Condition, Concentration) %>% 
+  filter(!is.na(mean_luminescence_norm)) %>% 
+  group_by(Condition) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  arrange(Concentration) %>% 
+  select(Condition, Concentration)
+
+Favoring_order = Plot_lumi_df %>% 
+  count(Condition, Colonization, .drop = FALSE) %>% 
+  pivot_wider(id_cols = Condition, names_from = Colonization, values_from = n) %>% 
+  left_join(Min_conc, by = join_by(Condition)) %>% 
+  arrange(-`S. Tm-favoring`, -Concentration, `S. Tm-restricting`)
+```
+
+```{r fig.height=6, fig.width=8}
+Treatment_figure = Plot_lumi_df %>% 
+  mutate(Condition = factor(Condition, levels = Favoring_order$Condition), 
+         OD_shade = case_when(mean_OD_norm >= 0.75 ~ "High",
+                              mean_OD_norm < 0.75 ~ "Low",
+                              TRUE ~ "High"),
+         OD_shade = factor(OD_shade, levels = c("Low", "High"))) %>% 
+  ggplot(aes(x = Condition, y = Concentration, fill = Colonization, alpha = OD_shade)) +
+  geom_tile(color = "lightgray") +
+  geom_point(aes(shape = Excluded), show.legend=FALSE) +
+  scale_alpha_discrete(range = c(0.70, 1)) +
+  scale_fill_discrete(type = Colonization_palette) +
+  scale_shape_manual(values = c(4)) +
+  theme_light() +
+  theme(panel.grid = element_blank()) +
+  labs(x = "Drug", y = "Concentration (uM)", fill = "Treatment group") +
+  coord_fixed() +
+  theme(axis.text.x = element_text(size = 8, angle = 90, hjust = 1),
+        axis.text.y = element_text(size = 8),
+        legend.position = "bottom")
+
+Treatment_figure
+```
+
+```{r}
+# ggpubr::ggexport(Treatment_figure, 
+#                  filename = file.path(figure_dir, "Fig_2_Treatment_Groups.pdf"), 
+#                  height = 6,
+#                  width = 8)
+```
+
+# Source data
+```{r}
+Source_ED5A = Plot_lumi_df %>% 
+  mutate(Condition = factor(Condition, levels = Favoring_order$Condition), 
+         OD_shade = case_when(mean_OD_norm >= 0.75 ~ "High",
+                              mean_OD_norm < 0.75 ~ "Low",
+                              TRUE ~ "High"),
+         OD_shade = factor(OD_shade, levels = c("Low", "High"))) %>% 
+  select(Drug = Condition, Concentration, Excluded, Colonization, mean_OD_norm)
+
+# write_tsv(Source_ED5A, file.path(base_dir, "Tables/source_data/Source_ED5A.tsv"))
+
+```

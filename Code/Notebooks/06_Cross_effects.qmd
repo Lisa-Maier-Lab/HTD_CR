@@ -1,0 +1,223 @@
+---
+title: "Ratio AUC ~ Ratio relative abundance plot"
+format: html
+---
+
+
+Jacobo de la Cuesta-Zuluaga. May 2023
+The aim of this notebook is to create the figure of bacterial AUC
+in monoculture/control ~ relative abundance/control to determine the proportion
+of species protected or sensitized in the community by each treatment
+
+# Notes
+the data in the present script come from Taiyeb's files in
+`"/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper/Data/Taiyeb_data/fig18"`
+NT5024 is a slow growing and we can't use them for MICs 
+NT5017 does not grow in mGAM so we decided to not use this strain for MICs as well
+
+# Libraries
+
+```{r}
+library(tidyverse)
+library(conflicted)
+```
+
+
+```{r}
+# Solve conflicts
+conflict_prefer("filter", "dplyr")
+```
+
+
+# Load tables 
+```{r}
+# Directories
+base_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper"
+data_dir = file.path(base_dir, "Data/Taiyeb_data/fig18")
+figure_dir = file.path(base_dir, "Figures")
+```
+
+```{r}
+# AUC table
+COM20_AUC_raw = file.path(base_dir, "Data/Monoculture_AUCs/AUCs_total.tsv") %>%
+  read_tsv() %>% 
+    filter(!(drug %in% c("Gallidermin", "L15", "Rhodomyrtone", "PPAP23", "Polyethylene",
+                       "Trimethoprim", "Ofloxacin", "Nalidixic acid", "Oxolinic acid")),
+         Species != "Salmonella enterica typhimurium TolC") %>% 
+  mutate(drug = str_replace(drug, "Clomiphene", "Clomifen"))
+
+
+COM20_AUC_newest = file.path(base_dir, "Data/Monoculture_AUCs/2023_07_20_AUCs_total.tsv") %>%
+  read_tsv() %>% 
+    filter(!(drug %in% c("Gallidermin", "L15", "Rhodomyrtone", "PPAP23", "Polyethylene",
+                       "Trimethoprim", "Ofloxacin", "Nalidixic acid", "Oxolinic acid")),
+         Species != "Salmonella enterica typhimurium TolC") %>% 
+  mutate(drug = str_replace(drug, "Clomiphene", "Clomifen"))
+```
+
+
+```{r}
+# importing the com20 dataset
+Com20_OD_lumi_raw = file.path(base_dir, "/Data/OD_Lumi_Selection/Com20_OD_lumi_select.tsv") %>% 
+  read_tsv()
+
+COM20_OD_raw = Com20_OD_lumi_raw %>% 
+  mutate(Drug = str_replace(Drug, "Clomiphene", "Clomifen")) %>% 
+  filter(!(Drug %in% c("Gallidermin", "L15", "Rhodomyrtone", "PPAP23", "Polyethylene",
+                            "Trimethoprim", "Ofloxacin", "Nalidixic acid", "Oxolinic acid"))) %>% 
+  group_by(Drug, Conc) %>% 
+  summarise(mean_ODnorm = mean(rel_OD)) %>% 
+  ungroup() %>% 
+  select(Condition = Drug, mean_ODnorm, Conc) %>% 
+  mutate(Treatment = str_c(Condition, Conc, sep = " ")) %>% 
+  select(Treatment, mean_ODnorm) 
+```
+
+
+
+```{r}
+# 16S data
+COM20_relabund_raw = file.path(data_dir, "COM20_relAbundance_mean.csv") %>% 
+  read_csv() %>% 
+  rename(Treatment= "...1") %>% 
+  mutate(drug = str_remove(Treatment, " [0-9].*")) %>% 
+  filter(!(drug %in% c("Gallidermin", "L15", "Rhodomyrtone", "PPAP23", "Polyethylene",
+                       "Trimethoprim", "Ofloxacin", "Nalidixic acid", "Oxolinic acid"))) %>% 
+  select(-drug) %>% 
+  mutate(Treatment = str_replace(Treatment, "Clomiphene", "Clomifen"))
+
+  # Add the abbreviation used by Taiyeb
+COM20_Taxonomy = "/mnt/volume_1/dm_main/projects/Amplicon_Seq_References/COM20_GTDB_Taxonomy.txt" %>% 
+  read_tsv() %>% 
+  separate(NCBI_Taxonomy, into = LETTERS[1:6], sep = ";", remove = FALSE) %>%   
+  select(ID, NCBI_Taxonomy, GTDB_Taxonomy, Species = "F") %>% 
+  mutate(Species = word(Species, end = 2), 
+         Species = abbreviate(Species,  1, named = FALSE))
+
+```
+
+
+# Calculate ratios
+```{r}
+# Calculate ratio of relabund of each taxon on each treatment to the control
+# Add the ID of the taxon since this table only has the abbreviation
+COM20_relabund_ratio = COM20_relabund_raw %>% 
+  pivot_longer(-Treatment, names_to = "Species", values_to = "Relabund") %>% 
+  left_join(COM20_OD_raw, by = join_by(Treatment)) %>% 
+  mutate(mean_ODnorm = if_else(Treatment == "Control", 1, mean_ODnorm),
+         Relabund_OD = Relabund * mean_ODnorm) %>% 
+  group_by(Species) %>% 
+  mutate(Relabund_ratio = Relabund_OD/last(Relabund_OD)) %>% 
+  ungroup() %>% 
+  left_join(., select(COM20_Taxonomy, ID, Species))
+
+# Double check that values were actually adjusted by control
+COM20_relabund_ratio %>% 
+  filter(Treatment == "Control") %>% 
+  mutate(Is_1 = Relabund_ratio == 1)
+
+
+# Filter AUC table to treatment and strains of interest
+COM20_AUC_ratio = COM20_AUC_newest %>% 
+  rename("ID" = "strain") %>% 
+  mutate(Treatment = str_c(drug, concentration, sep = " ")) %>% 
+  filter(ID %in% COM20_Taxonomy$ID, 
+         Treatment %in% COM20_relabund_ratio$Treatment) %>% 
+  select(ID, normAUC, Treatment) 
+
+# Join AUC and relabund tables
+COM20_relabund_AUC = full_join(COM20_relabund_ratio, COM20_AUC_ratio, 
+                               by = c("Treatment", "ID")) %>% 
+  filter(!(ID %in% c("NT5024", "NT5017")), 
+         !str_detect(Treatment, "Ofloxacin"),
+         !(str_detect(Treatment, "160") & is.na(normAUC)))
+```
+
+
+```{r}
+# Determine whether a strain is sensitized or protected on each treatment
+# Two steps, one by AUC and other by Relabund
+COM20_cross_sensitivity = COM20_relabund_AUC %>% 
+  mutate(AUC_hit = if_else(normAUC <= 0.75, "Reduced", "Normal"),
+         Abund_hit = if_else(Relabund_ratio <= 0.5, "Reduced", "Normal"),
+         Result = case_when((AUC_hit == "Reduced" & Abund_hit == "Reduced") ~ "Reduced - expected",
+                            (AUC_hit == "Normal" & Abund_hit == "Normal") ~ "Unchanged - expected",
+                            (AUC_hit == "Reduced" & Abund_hit == "Normal") ~ "Protected",
+                            (AUC_hit == "Normal" & Abund_hit == "Reduced") ~ "Sensitized")) 
+
+# Number of strains sensitized or protected by treatment
+Cross_sensitivity_count = COM20_cross_sensitivity %>% 
+  group_by(Treatment) %>% 
+  count(Result, .drop = FALSE) %>% 
+  drop_na() %>% 
+  mutate(Result = factor(Result, levels = c("Protected", 
+                                            "Reduced - expected", 
+                                            "Unchanged - expected", 
+                                            "Sensitized")))
+
+
+# Order of treatments based on number of expected
+Treat_order = Cross_sensitivity_count %>% 
+  pivot_wider(id_cols = "Treatment", 
+              names_from = Result, 
+              values_from = n, values_fill = 0) %>% 
+  arrange(`Unchanged - expected`, `Reduced - expected`, Sensitized) %>% 
+  pull(Treatment)
+
+```
+
+
+```{r fig.height=6, fig.width=7}
+Cross_sensitivity_plot = Cross_sensitivity_count %>% 
+  mutate(Treatment = factor(Treatment, levels = Treat_order)) %>% 
+  filter(Treatment != "Felodipine 20") %>% 
+  ggplot(aes(x = n, y = Treatment, fill = Result)) +
+  geom_bar(stat = "identity", color = "white", linewidth = 0.2) +
+  scale_fill_manual(values = c("Protected"= "#ffd275ff", 
+                               "Reduced - expected" = "lightgray",
+                               "Unchanged - expected" = "gray60",
+                               "Sensitized" = "#512d38ff")) +
+  scale_x_continuous(expand = expansion(mult = 0)) +
+  theme_light() +
+  theme(panel.grid = element_blank(), 
+        axis.text.y = element_text(size = 7),
+        legend.position = "bottom") +
+  labs(x = "Numer of strains", y = "Treatment") +
+  guides(fill=guide_legend(nrow=2))
+
+Cross_sensitivity_plot
+```
+
+
+```{r}
+# ggpubr::ggexport(Cross_sensitivity_plot, 
+#                  filename = file.path(figure_dir, "Fig_S2_Cross-sensitivity.pdf"), 
+#                  height = 6, 
+#                  width = 7)
+```
+
+# Source data
+```{r}
+Source_ED4H = Cross_sensitivity_count %>% 
+  mutate(Drug_Concentration = factor(Treatment, levels = Treat_order)) %>% 
+  filter(Drug_Concentration != "Felodipine 20")
+
+# write_tsv(Source_ED4H, file.path(base_dir, "Tables/source_data/Source_ED4H.tsv"))
+```
+
+# Summary stats
+```{r}
+Cross_sensitivity_count %>% 
+  group_by(Result) %>% 
+  summarise(Total = sum(n)) %>% 
+  ungroup() %>% 
+  mutate(Prop = Total/sum(Total),
+         Prop = round(Prop*100, 1))
+```
+# Export
+```{r}
+# Export for Zafirlukast analyses
+# COM20_cross_sensitivity %>% 
+#   write_tsv(file = "/mnt/volume_1/dm_main/projects/Small_projects/Zafirlukast_Cross/Tables/Cross_InVitro.tsv")
+```
+

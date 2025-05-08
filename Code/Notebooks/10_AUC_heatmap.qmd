@@ -1,0 +1,192 @@
+---
+title: "SX"
+format: html
+---
+
+Jacobo de la Cuesta-Zuluaga. October 2022
+The aim of this script is to generate the heatmap plot of AUC values
+of drugs from which the final selection was then done
+
+# Libraries 
+
+```{r}
+library(tidyverse)
+library(ggpubr)
+library(rstatix)
+library(circlize)
+library(ComplexHeatmap)
+library(ggrepel)
+library(ggdendro)
+library(conflicted)
+```
+
+
+```{r}
+# Solve conflicts
+conflict_prefer("filter", "dplyr")
+```
+
+```{r}
+# Set seed
+set.seed(2112)
+```
+
+
+# Load tables 
+
+```{r}
+# Directories
+base_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper"
+data_dir = file.path(base_dir, "Data/Drug_hits_patho_comm")
+figure_dir = file.path(base_dir, "Figures")
+
+
+# Load tables
+AUC_noPatho_raw = file.path(data_dir, "combined_pv.tsv") %>% 
+  read_tsv()
+
+AUC_Patho_raw = file.path(data_dir, "extra_pv.tsv") %>% 
+  read_tsv()
+
+species_annot_raw =  file.path(data_dir, "gut_species_magic40.csv") %>% 
+  read_csv2()
+
+species_annot = species_annot_raw %>% 
+  mutate(Phylum = factor(Phylum, levels = c("Actinobacteria", "Firmicutes", "Fusobacteria", 
+                                            "Bacteroidetes", "Verrucomicrobia", "Proteobacteria"))) %>% 
+  arrange(Phylum) %>%
+  # arrange(Phylum, Class, Order, Family, Genus, Species) %>% 
+  mutate(NT_code = fct_inorder(NT_code)) %>% 
+  filter(NT_code != "NT5085")
+
+COM20_Annot = "/mnt/volume_1/dm_main/projects/Amplicon_Seq_References/COM20_GTDB_Taxonomy.txt" %>% 
+  read_tsv() %>% 
+  mutate(Species = str_remove(GTDB_Taxonomy, ".*s__")) %>% 
+  select(ID, Species)
+
+Prest_annot_raw =  file.path(data_dir, "p2at.tsv") %>% 
+  read_tsv()
+
+# Read ATC code table
+ATC_classification_raw = "/mnt/volume_1/dm_main/databases/atcd/WHO ATC-DDD 2021-12-03.csv" %>% 
+  read_csv()
+```
+
+```{r}
+# Treatments
+# importing the com20 dataset
+Com20_OD_lumi_raw = file.path(base_dir, "/Data/OD_Lumi_Selection/Com20_OD_lumi_select.tsv") %>% 
+  read_tsv()
+
+Treatments_df_raw = Com20_OD_lumi_raw %>% 
+  mutate(Drug = str_replace(Drug, "Clomiphene", "Clomifen")) %>% 
+  filter(!(Drug %in% c("Gallidermin", "L15", "Rhodomyrtone", "PPAP23", "Polyethylene",
+                            "Trimethoprim", "Ofloxacin", "Nalidixic acid", "Oxolinic acid"))) %>% 
+  group_by(Drug, Conc) %>% 
+  summarise(mean_ODnorm = mean(rel_OD)) %>% 
+  ungroup() %>% 
+  select(Condition = Drug, mean_ODnorm, Conc)
+```
+
+
+
+```{r}
+# prepare tables
+# Remove tolC mutant
+Inhibitors = c("Trimethoprim", "Ofloxacin", "Nalidixic acid", "Oxolinic acid") 
+
+
+AUC_table = bind_rows(AUC_noPatho_raw, AUC_Patho_raw) %>% 
+  filter(NT_code != "NT5085")
+```
+
+
+```{r}
+# Drugs selected for downstream analyses
+Prestwick_selection = file.path(data_dir, "Selection_Prestwick.xlsx") %>% 
+  readxl::read_xlsx(col_names = c("prestwick_ID", "chemical_name"))
+                                
+```
+
+# Tables for heatmap 
+```{r}
+# Prestwick annotation
+# Add Prestwick ID to the treatment table
+# Fix names to match tables
+Prest_annot_tmp = Prest_annot_raw %>% 
+  select(prestwick_ID, chemical_name) %>% 
+  mutate(Name_short = word(chemical_name, end = 1), 
+         Name_short = str_remove(Name_short, ","),
+         Name_short = str_replace(Name_short, "Thyroxine", "L-Thyroxine")) %>% 
+  distinct()
+
+# Distinct conditions
+Treatments_df = Treatments_df_raw %>% 
+  select(Condition) %>%
+  mutate(Name_short = word(Condition, end = 1)) %>% 
+  distinct() 
+
+# Merge tables
+Prest_annot = left_join(Prest_annot_tmp, Treatments_df)
+
+# Sanity check
+Prest_annot %>% 
+  filter(!is.na(Condition))
+```
+
+
+```{r}
+Drug_taxa_AUC = AUC_table %>% 
+  left_join(COM20_Annot, by = c("NT_code" = "ID")) %>% 
+  left_join(Prest_annot, by = join_by(prestwick_ID)) %>% 
+  filter(NT_code %in% COM20_Annot$ID,
+         prestwick_ID %in% Prestwick_selection$prestwick_ID) %>% 
+  select(prestwick_ID, chemical_name, Species, AUC)
+
+Drug_taxa_AUC %>% 
+  count(prestwick_ID)
+
+Drug_taxa_AUC_mat = Drug_taxa_AUC %>% 
+  mutate(Species = str_replace(Species, "[a-z].* ", ". ")) %>% 
+  pivot_wider(id_cols = prestwick_ID, names_from = Species, values_from = AUC) %>% 
+  column_to_rownames("prestwick_ID") %>% 
+  as.matrix()
+```
+
+```{r}
+# Plot heatmap
+# Color palette
+col_fun_auc = colorRamp2(seq(0, 1.1, length = 30), viridis::viridis(30,option = "A"))
+
+# Add chemical name as label
+Drug_names = Drug_taxa_AUC %>% 
+  pull(chemical_name)
+
+names(Drug_names) = Drug_taxa_AUC %>% 
+  pull(prestwick_ID)
+
+Drug_taxa_heatmap_noannot = Drug_taxa_AUC_mat %>% 
+  Heatmap(name = "AUC", 
+          clustering_method_rows = "complete",
+          clustering_method_columns = "complete",
+          row_names_gp = gpar(fontsize = 5),
+          row_labels = Drug_names[rownames(Drug_taxa_AUC_mat)],
+          column_names_gp = gpar(fontsize = 8), 
+          column_names_rot = 45, 
+          col = col_fun_auc)
+```
+
+
+
+```{r fig.height=7, fig.width=7}
+# Print and export
+draw(Drug_taxa_heatmap_noannot, padding = unit(c(10, 25, 2, 5), "mm"))
+
+# pdf(file = file.path(figure_dir, "Fig_S1_heatmap_drug_taxa_noannot.pdf"), width = 7, height = 7);draw(Drug_taxa_heatmap_noannot, padding = unit(c(20, 50, 2, 5), "mm"));dev.off()
+```
+# Source data
+```{r}
+Source_ED1B = Drug_taxa_AUC
+
+# write_tsv(Source_ED1B, file.path(base_dir, "Tables/source_data/Source_ED1B.tsv"))
+```

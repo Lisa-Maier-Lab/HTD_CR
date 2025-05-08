@@ -1,0 +1,320 @@
+---
+title: "Donor community in mice"
+format: html
+---
+
+
+Jacobo de la Cuesta-Zuluaga. September 2024.
+
+The aim of this notebook is to compare the microbial community from donor-derived
+samples to the microbiome of mice where these samples were inoculated.
+
+# Library
+```{r}
+library(tidyverse)
+library(conflicted)
+library(GUniFrac)
+library(vegan)
+library(PERFect)
+library(rstatix)
+```
+
+```{r}
+conflicts_prefer(dplyr::filter())
+conflicts_prefer(purrr::map())
+```
+
+
+# Directories
+```{r}
+# Set dirs
+base_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper/Data/2024_08_sequencing"
+
+ASV_dir = file.path(base_dir, "dieciseis_out")
+
+ASV_dir %>% 
+	list.files()
+
+tab_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper/Tables/"
+figure_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper/Figures/"
+```
+
+
+
+```{r}
+# Load tables
+# ASV tables
+# Note that the relabund table contains blanks but the rarefied does not
+ASV_table = file.path(ASV_dir, "2024_08_ASV_table.tsv") %>%
+	read_tsv()
+
+ASV_tree.tre = file.path(ASV_dir, "2024_08_ASV_tree.tre") %>%
+	ape::read.tree()
+
+ASV_blanks_relabund = file.path(ASV_dir, "ASV_blanks_relabund.tsv") %>%
+	read_tsv()
+
+ASV_blanks = file.path(ASV_dir, "ASV_blanks.tsv") %>%
+	read_tsv()
+
+ASV_rare = file.path(ASV_dir, "ASV_rare.tsv") %>%
+	read_tsv()
+
+ASV_relabund = file.path(ASV_dir, "ASV_relabund.tsv") %>%
+	read_tsv()
+
+# Taxonomy table
+merged_taxonomy_sp = file.path(ASV_dir, "Salmonella_taxonomy.tsv") %>% 
+  read_tsv() 
+
+# Load metadata
+Metadata_raw = file.path(base_dir,
+                        "Raw_sequences/Complex_colonized_list_batch.xlsx") %>% 
+  readxl::read_xlsx() %>% 
+  mutate(Sample = as.character(Sample),
+         Experiment = as.factor(Experiment))
+```
+
+```{r}
+# Fix metadata
+Metadata_df = Metadata_raw %>% 
+  mutate(Treatment = if_else(is.na(Treatment), "Blank", Treatment), 
+         Sample_type = case_when(Treatment == "Blank" ~ "Blank",
+                                 Treatment == "Inoculum" ~ "Inoculum",
+                                 TRUE ~ "Mouse"), 
+         Time_point = case_when(Day == 0 ~ "Pre-treatment",
+                                Day == 6 ~ "Post-treatment",
+                                Day == 4 ~ "Post-infection",
+                                TRUE ~ NA),
+         Time_point = factor(Time_point, 
+                             levels = c("Pre-treatment", "Post-treatment", "Post-infection"))) %>% 
+  group_by(Mousenumber) %>% 
+  mutate(Experiment = first(Experiment)) %>% 
+  ungroup() %>% 
+  arrange(Mousenumber)
+```
+
+
+# Filter tables 
+```{r}
+Treatment_levels = c("DMSO",  "Terfenadine") #"Streptomycin"
+
+
+Treatment_colors =  c("DMSO" = "#01a7c2",
+                      "Terfenadine" = "#183642")
+
+# Order taxa by phylum
+by_treatment = names(Treatment_colors)
+```
+
+```{r}
+# Use the same samples for days zero and 6
+# Samples at day 6
+HUM_six_metadata = Metadata_df %>% 
+  filter(Day == 6 & Treatment %in% Treatment_levels)
+
+# Samples at day 0
+HUM_zero_metadata = Metadata_df %>% 
+  filter(Day == 0 & 
+           Treatment %in% Treatment_levels &
+           Mousenumber %in% HUM_six_metadata$Mousenumber)
+
+HUM_zs_metadata = bind_rows(HUM_zero_metadata, HUM_six_metadata) %>% 
+  select(Sample, Mousenumber, Treatment, Day)
+
+
+HUM_zs_ASV = ASV_table %>% 
+    separate_wider_delim(cols = Sample, delim = "_", 
+                       names = c("pre", "Sample", "post")) %>% 
+  select(-c("pre", "post")) %>% 
+  filter(Sample %in% HUM_zs_metadata$Sample)
+```
+
+
+```{r}
+# Filtering based on prevalence and abundance
+# # Calculate prevalence of species in samples
+HUM_tax_prevalence = HUM_zs_ASV %>%
+  pivot_longer(-Sample, names_to = "Taxon", values_to = "Counts") %>%
+  mutate(Presence = Counts > 0) %>%
+  group_by(Taxon) %>%
+  count(Presence) %>%
+  filter(Presence) %>%
+  mutate(Prevalence = (n/nrow(HUM_zs_ASV))*100)
+
+# Calculate mean abundance of species in samples
+HUM_tax_relabund = HUM_zs_ASV %>%
+  column_to_rownames("Sample") %>%
+  decostand(method = "total") %>%
+  rownames_to_column("Sample") %>%
+  pivot_longer(-Sample, names_to = "Taxon", values_to = "Relabund") %>%
+  group_by(Taxon) %>%
+  summarise(Mean_relabund = mean(Relabund)*100)
+
+# Combine prevalence and relabund tables
+HUM_tax_prevalence_relabund = left_join(HUM_tax_prevalence,
+                                        HUM_tax_relabund,
+                                        by = join_by(Taxon))
+
+# Retain species present in at least 10% of samples
+HUM_tax_retained = HUM_tax_prevalence_relabund %>%
+  filter(Prevalence > 25 & Mean_relabund > 0.1)
+
+# Filter counts table
+HUM_zs_filt = HUM_zs_ASV %>%
+  select(Sample, any_of(HUM_tax_retained$Taxon))
+
+# Contribution of the retained ASVs to the total microbiome
+HUM_zs_ASV %>%
+  column_to_rownames("Sample") %>%
+  decostand(method = "total") %>%
+  rownames_to_column("Sample") %>%
+  select(any_of(HUM_tax_retained$Taxon)) %>%
+  rowSums() %>%
+  summary()
+```
+
+```{r}
+# Obtain CLR transformation
+
+HUM_zs_clr = HUM_zs_filt  %>% 
+  column_to_rownames("Sample") %>% 
+  zCompositions::cmultRepl(output = "p-counts", z.delete = FALSE) %>% 
+  decostand(method = "clr") %>% 
+  rownames_to_column("Sample")
+```
+
+```{r}
+Treatment_levels = c("DMSO","Terfenadine")
+
+# Split species table by species
+# Join clr and metadata tables
+# Long format
+HUM_zs_clr_long = left_join(HUM_zs_metadata, HUM_zs_clr) %>% 
+  pivot_longer(-c(Sample, Mousenumber, Day, Treatment), 
+               names_to = "Species", values_to = "clr")
+
+HUM_zs_clr_long %>% 
+  head()
+```
+
+
+```{r}
+# Separate d0 and d6 into distinct columns
+HUM_zs_clr_wide = HUM_zs_clr_long %>% 
+  pivot_wider(id_cols = c(Mousenumber, Treatment, Species), 
+              names_from = Day, 
+              values_from = clr, 
+              names_prefix = "clr_d") %>% 
+  arrange(Species, Treatment) %>% 
+  mutate(Treatment = factor(Treatment, 
+                            levels = Treatment_levels))
+
+HUM_zs_clr_wide %>% 
+  head()
+
+# Generate a data frame per species in all treatments
+# With two columns corresponding to the clr at days 0 and 6
+HUM_zs_clr_list = HUM_zs_clr_wide %>% 
+  group_split(Species)
+```
+
+
+
+```{r}
+# Function to run ANCOVA of pre/post abundances
+robust_lm <- function(my_df){
+  # Names of species for out table
+  Species = unique(my_df$Species)
+  
+  # Run lm
+  m <- lm(clr_d6 ~ clr_d0 + Treatment, data = my_df)
+  
+  # Perform coefficient test of robust regression
+  m_out = lmtest::coeftest(m, vcov. = sandwich::vcovHC(m))
+  
+  # Create output data frame
+  m_out_df = as.data.frame(m_out[,]) %>% 
+    rownames_to_column("Term") %>% 
+    mutate(Species = Species)
+  
+  colnames(m_out_df) = c("Term", "Estimate", "Std_error", 
+                         "t_value", "p_value", "Species")
+  
+  # Return
+  m_out_df
+}
+
+# Run on each ASV
+HUM_lm = map_df(HUM_zs_clr_list, function(df){
+  robust_lm(df)
+})
+
+# The estimate represents the change in clr-transformed abundance
+# Of each microbe on each treatment compared to the control after adjusting
+# for baseline abundance
+# Log2FoldChange is just a change of base of the estimate for plots
+HUM_lm_df = HUM_lm %>% 
+  filter(!(Term %in% c("clr_d0", "(Intercept)"))) %>% 
+  rename("Treatment" = "Term") %>% 
+  mutate(Treatment = str_remove(Treatment, "Treatment"),
+         log2FoldChange = log2(exp(Estimate)),
+         Species = str_replace(Species, "[a-z].* ", "\\. ")) %>% 
+  arrange(Treatment, p_value) %>% 
+  group_by(Treatment) %>% 
+  mutate(p_adjusted = p.adjust(p_value, method = "BH"),
+         Treatment = factor(Treatment, levels = Treatment_levels)) %>% 
+  ungroup() %>% 
+  mutate(significant = p_adjusted < 0.1,
+         Species = fct_reorder(Species, log2FoldChange, 
+                               .fun = median, .desc = TRUE))
+
+```
+
+```{r fig.height=6, fig.width=6}
+# Volcano plot of COM20 members in each community
+HUM_lm_volcano = HUM_lm_df %>%
+  ggplot(aes(x = log2FoldChange, y = -log10(p_adjusted), shape = significant)) +
+  geom_hline(yintercept = 1, color = "darkgray", linetype = "dashed") +
+  geom_vline(xintercept = 0, color = "darkgray", linetype = "dashed") +
+  geom_point(size = 2, alpha = 0.65) +
+  scale_shape_manual(values = c("TRUE" = 23, "FALSE" = 21)) +
+  theme_light() +
+  facet_wrap(~Treatment, ncol = 2) +
+  labs(x = "Log2 fold-change (clr-transformed abundance)", y = "-log10(Adj. P)") 
+
+
+HUM_lm_volcano
+```
+
+```{r}
+# Export plots
+# ggpubr::ggexport(HUM_lm_volcano,
+#                  filename = file.path(figure_dir, 
+#                                       "HUM_lm_volcano.pdf"),height = 6, width = 6)
+```
+
+
+# Source data
+```{r}
+Source_ED10F = HUM_lm_df %>%
+  select(Drug = Treatment, ASV = Species, Regression_coefficient = log2FoldChange,
+         P_value = p_value, Adjusted_P = p_adjusted)
+
+# write_tsv(Source_ED10F, file.path(tab_dir, "source_data/Source_ED10F.tsv"))
+```
+ 
+# Export tables
+```{r}
+HUM_lm_export = HUM_lm_df %>% 
+  left_join(merged_taxonomy_sp, by = join_by(Species == ID)) %>% 
+  select(Species, Name, Treatment,
+         log2FoldChange, p_adjusted, significant, 
+         Class, Order, Family, Genus) %>% 
+  arrange(Treatment, log2FoldChange)
+```
+
+```{r}
+# HUM_lm_export %>% 
+#   write_tsv(file.path(tab_dir, "HUM_diffabund.tsv"))
+```

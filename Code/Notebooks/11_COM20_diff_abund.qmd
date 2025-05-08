@@ -1,0 +1,280 @@
+---
+title: "Differential abundance of taxa by colonization"
+format: html
+---
+
+Jacobo de la Cuesta-Zuluaga. May 2023. 
+The aim of this script is to perform differential abundance of
+microbial abundance dividing the groups by colonization of Salmonella
+
+
+# Libraries
+
+```{r}
+library(tidyverse)
+library(ggrepel)
+library(conflicted)
+```
+
+
+```{r}
+# Solve conflicts
+conflict_prefer("filter", "dplyr")
+```
+
+
+# Load tables 
+
+
+```{r}
+# Input dirs
+base_dir = "/mnt/volume_1/dm_main/projects/COM20_picrust/"
+
+prediction_dir = file.path(base_dir, "Pipeline_out")
+tables_dir = file.path(base_dir, "out_tables")
+figure_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper/Figures/"
+
+# Taxa abundance
+COM20_abund_raw = file.path(base_dir, "Data/COM20_abundance_original.tsv") %>% 
+  read_tsv()
+
+# Metadata
+metadata_table_raw = file.path(base_dir, "Data/COM20_metadata.tsv") %>% 
+  read_tsv()
+
+# Samples to remove
+remove_samples = metadata_table_raw %>% 
+  filter(Condition == "Comm" |(Condition != "Control" & is.na(signal_norm))) %>% 
+  pull(Sample)
+
+metadata_table = metadata_table_raw %>% 
+  filter(!(Sample %in% remove_samples)) %>% 
+  mutate(Treatment = str_c(Condition, Conc, sep = "_"))
+
+metadata_colonization = file.path(tables_dir, "Metadata_colonization.tsv") %>% 
+  read_tsv() %>% 
+  mutate(Colonization = case_when(Colonization == "Salmonella-favouring" ~ "S. Tm-favoring",
+                                  Colonization == "Salmonella-restricting" ~ "S. Tm-restricting",
+                                  TRUE ~ Colonization),
+         Colonization = factor(Colonization, 
+                               levels = c("S. Tm-favoring", "S. Tm-restricting", 
+                                          "No effect", "Control")))
+
+
+c("S. Tm-favoring","S. Tm-restricting", "No effect", "Control")
+
+Taxa_IDs = "/mnt/volume_1/dm_main/projects/Amplicon_Seq_References/COM20_GTDB_Taxonomy.txt" %>% 
+  read_tsv() %>% 
+  separate(GTDB_Taxonomy, into = LETTERS[1:7], sep = ";") %>% 
+  select(Taxon = ID, Species = G) %>% 
+  mutate(Species = str_remove(Species, "s__"), 
+         Species = str_replace(Species, "[a-z].* ", ". "))
+```
+
+```{r}
+# Colors 
+# Colonization_palette = c("Increased" = "#d95f02",
+#                          "Decreased" = "#33a02c",
+#                          "No_effect" = "#1f78b4",
+#                          "Control" = "darkgrey")
+
+
+Colonization_palette = c("S. Tm-favoring" = "#AF3800",
+                         "S. Tm-restricting" = "#379634",
+                         "No effect" = "#8B89A9",
+                         "Control" = "#C1BFB5")
+
+```
+
+
+# Prepare tables
+
+```{r}
+# Metadata
+# Drugs inhibiting Salmonella
+inhibitors = c("Trimethoprim", "Ofloxacin", "Nalidixic acid", "Oxolinic acid", 
+               "Avermectin B1", "Avermectin")
+
+# Filter metadata
+# Retain controls
+metadata_table_filt = metadata_colonization %>% 
+  filter(!(Condition %in% inhibitors) & !is.na(Colonization))
+```
+
+
+```{r}
+# Organize and filter taxa abundance table
+COM20_abund =  COM20_abund_raw %>% 
+  mutate(Sample = str_replace_all(Sample, "-", "_"), 
+         Sample = str_c("sm_", Sample)) %>% 
+  select(Sample, starts_with("NT"))
+
+
+COM20_abund_filt = COM20_abund %>% 
+  filter(Sample %in% metadata_table_filt$Sample)
+```
+
+
+```{r}
+# Replace zeros in a # Replace zero values in a compositionally aware manner
+COM20_abund_nZero = COM20_abund_filt %>% 
+  column_to_rownames("Sample") %>% 
+  zCompositions::cmultRepl(output="p-counts", z.delete = FALSE) 
+
+# Calculate CLR transformation
+COM20_abund_clr = COM20_abund_nZero %>% 
+  vegan::decostand(method = "clr", MARGIN = 1) %>% 
+  rownames_to_column("Sample")
+```
+
+
+# Linear Models
+
+```{r}
+
+# Define function with new defaults
+maaslin_2 = function(input_data = input_data,
+                     input_metadata = input_metadata,
+                     output = "/mnt/volume_1/dm_main/projects/COM20_picrust/tmp",
+                     temp_dir = "/mnt/volume_1/dm_main/projects/COM20_picrust/tmp",
+                     qval = 0.1,
+                     min_abundance =-1,
+                     min_prevalence = 0,
+                     normalization = "NONE",
+                     transform = "NONE",
+                     analysis_method = "LM",
+                     max_significance = 0.25,
+                     random_effects = NULL,
+                     fixed_effects = NULL,
+                     correction = "BH",
+                     standardize = FALSE,
+                     cores = 1,
+                     plot_heatmap = FALSE,
+                     plot_scatter = FALSE,
+                     heatmap_first_n = 50,
+                     reference_level = NULL) {
+  
+  # Write data frames to temporary files to execute Maaslin2
+  tmp_feature = tempfile(pattern = "feats_", tmpdir = temp_dir, fileext = ".txt")
+  write_delim(input_data, tmp_feature, delim = "\t")
+  
+  tmp_metadata = tempfile(pattern = "metadata_", tmpdir = temp_dir, fileext = ".txt")
+  write_delim(input_metadata, tmp_metadata, delim = "\t")
+  
+  # Maaslin is very verbose
+  # There is no way of deactivating the log
+  # I'll sink it to a temporary file as well
+  tmplog = tempfile(pattern = "log_", tmpdir = temp_dir, fileext = ".txt")
+  #print(tmplog)
+  sink(tmplog)
+  
+  # Execute Maaslin2
+  maaslin_2_fit = Maaslin2::Maaslin2(input_data = tmp_feature, 
+                                     input_metadata = tmp_metadata, 
+                                     output = output, 
+                                     min_abundance = min_abundance,
+                                     min_prevalence = min_prevalence,
+                                     normalization = normalization, 
+                                     transform = transform, 
+                                     analysis_method = analysis_method, 
+                                     max_significance = max_significance, 
+                                     random_effects = random_effects, 
+                                     fixed_effects = fixed_effects, 
+                                     correction = correction, 
+                                     standardize = standardize, 
+                                     cores = cores, 
+                                     plot_heatmap = plot_heatmap, 
+                                     plot_scatter = plot_scatter, 
+                                     heatmap_first_n = heatmap_first_n, 
+                                     reference = reference_level)
+  # End log sink
+  sink() 
+  
+  maaslin_2_df = maaslin_2_fit$result
+  maaslin_2_df
+}
+
+```
+
+
+
+```{r}
+# Removing samples in the 'Decreased' group
+# For now, just comparing the controls to 'No_effect' and 'Increased'
+maaslin_group_metadata = metadata_table_filt %>% 
+  # filter(Colonization != "S. Tm-restricting") %>% 
+  mutate(OD_norm = if_else(is.na(OD_norm), 1, OD_norm), 
+         log_signal_norm = log2(signal_norm))
+
+maaslin_group_abund = COM20_abund_filt %>% 
+  filter(Sample %in% maaslin_group_metadata$Sample) 
+
+
+Maaslin_groups = maaslin_2(input_data = maaslin_group_abund,
+                           input_metadata = maaslin_group_metadata,
+                           normalization = "CLR",
+                           fixed_effects = c("Colonization", "OD_norm"),
+                           reference_level = ("Colonization,Control"))
+```
+
+```{r}
+# Filter to significant results between groups after adjusting for OD
+Maaslin_signif = Maaslin_groups %>% 
+  filter(metadata == "Colonization", qval < 0.1) %>% 
+  select(Taxon = feature, value, coef, pval, qval, prev = N.not.zero) %>% 
+  left_join(Taxa_IDs, by = join_by(Taxon)) %>% 
+  arrange(value, coef)
+
+Volcano_df = Maaslin_groups %>% 
+  filter(metadata == "Colonization") %>% 
+  select(Taxon = feature, value, coef, pval, qval, prev = N.not.zero) %>% 
+  left_join(Taxa_IDs, by = join_by(Taxon)) %>% 
+  arrange(value, coef) %>% 
+  mutate(Signif = if_else(qval < 0.1, "Significant", "Non-significant"),
+         Label = if_else(Signif == "Significant", Species, NA),
+         value = factor(value, levels = c("S. Tm-favoring", 
+                                          "S. Tm-restricting", 
+                                          "No effect")))
+```
+
+
+```{r fig.height=5, fig.width=15}
+COM20_volcano = Volcano_df %>% 
+  # filter(value == "S. Tm-favoring")  %>%
+  ggplot(aes(x = coef, y = -log10(qval), color = Signif, label = Label)) +
+  geom_hline(yintercept = 1, color = "darkgray", linetype = "dashed") +
+  geom_point() +
+  facet_wrap(~value) +
+  geom_text_repel(min.segment.length = 0, 
+                  max.overlaps = Inf, box.padding = 1,
+                  max.time = 5,
+                  max.iter = 150000, 
+                  point.padding = 0.5, 
+                  color = "black") +
+  scale_color_manual(values = c("Significant" = "firebrick3", "Non-significant" = "black")) +
+  theme_light() +
+  labs(x = "Linear regression coefficient", y = "-log10(Adj. P value)") +
+  theme(legend.position = "none", 
+        text = element_text(size = 12))
+
+COM20_volcano
+
+# ggpubr::ggexport(COM20_volcano, 
+#                  filename = file.path(figure_dir, "Fig_3_COM20_volcano.pdf"), 
+#                  height = 5, width = 15)
+
+```
+
+# Source data
+```{r}
+Source_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper/Tables/source_data"
+Source_ED6D = COM20_volcano$data %>% 
+  select(NT_ID = Taxon, Species, Colonization = value, 
+         Regression_coefficient = coef, P_value = pval,
+         Adjusted_P = qval, Significance = Signif)
+
+# write_tsv(Source_ED6D, file.path(Source_dir, "Source_ED6D.tsv"))
+
+```
+
+

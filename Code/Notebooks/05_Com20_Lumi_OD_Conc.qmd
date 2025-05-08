@@ -1,0 +1,242 @@
+---
+title: "Figure Lumi ~ OD and drugs"
+format: html
+---
+
+Jacobo de la Cuesta-Zuluaga. May 2023.
+The aim of this script is to plot Com20  lumi ~ OD
+ 
+# Libraries 
+```{r}
+library(tidyverse)
+library(ggrepel)
+library(conflicted)
+```
+
+
+```{r}
+# Solve conflicts
+conflict_prefer("filter", "dplyr")
+```
+
+```{r}
+# Set seed
+set.seed(2112)
+```
+
+# Load tables 
+
+```{r}
+# Directories
+base_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper"
+data_dir = file.path(base_dir, "Data/Taiyeb_data/fig2_3_4_5_6")
+figure_dir = file.path(base_dir, "Figures")
+```
+
+```{r}
+# Is community- overnight OD and SB-Lumi anti-correlated or are there exceptions?
+OD = file.path(data_dir,"meanOD_norm.csv") %>%
+  read_csv()
+
+lumi = file.path(data_dir,"log2FC_lumi.csv") %>%
+  read_csv()
+# this dataset comes from fig7_8_9_10 folder. The figure numbering may not follow the logical flow of the paper
+```
+
+```{r}
+# OD Lumi file
+Com20_OD_lumi_raw = file.path(base_dir, 
+                              "/Data/OD_Lumi_Selection/Com20_OD_lumi_select.tsv") %>% 
+  read_tsv()
+
+Com20_OD_lumi = Com20_OD_lumi_raw %>% 
+  group_by(Drug, Conc) %>% 
+  mutate(log2FC_lumi = log2(rel_Lumi)) %>% 
+  summarise(log2FC_lumi = mean(log2FC_lumi), mean_ODnorm = mean(rel_OD)) %>% 
+  ungroup() %>% 
+  select(Condition = Drug, log2FC_lumi, mean_ODnorm, Conc) %>% 
+  mutate(drug_conc = str_c(Condition, Conc, sep = " "))
+```
+
+
+```{r}
+# Sequencing data
+sequenced_samples <- file.path(data_dir,"seq_samples.csv") %>% 
+  read_csv()
+```
+
+
+```{r}
+Inhibitors = c("Trimethoprim", "Ofloxacin", "Nalidixic acid", "Oxolinic acid", 
+               "Avermectin B1", "Avermectin")
+
+# Conditions to be labelled
+Conditions_labels = c("Clindamycin", "Doxycycline", "Clotrimazole", "Clomifen", 
+                      "Zafirlukast", "Chlorpromazine", "Terfenadine", "Clomifen", 
+                      "Floxuridine", "Simvastatin")
+
+# Combine tables
+# Data = OD %>%
+#   left_join(lumi, by=c('Condition', 'Conc')) %>%
+#   filter(!(Condition %in% Inhibitors)) %>%
+#   mutate(Condition = str_replace(Condition, "Clomiphene", "Clomifen")) %>%
+#   mutate(Condition_label = if_else(Condition %in% Conditions_labels, Condition, NA))
+
+Data = Com20_OD_lumi %>% 
+  mutate(Condition = str_replace(Condition, "Clomiphene", "Clomifen")) %>%
+  mutate(Condition_label = if_else(Condition %in% Conditions_labels, Condition, NA))
+
+Data %>% 
+  filter(Condition == "Clomiphene")
+
+
+data_com20_raw = file.path(data_dir, "COM20_diluted.xlsx") %>% 
+  readxl::read_xlsx()
+
+data_com20 = data_com20_raw %>% 
+  mutate(log2FC_lumi = log2(Lumi_norm))
+
+# library(ggpmisc) 
+# library suddenly stopped working on my laptop but this package I used for
+# putting R2 values and equation of lines on the graph
+
+```
+
+```{r}
+Data %>% 
+  arrange(log2FC_lumi)
+
+Data %>% 
+  select(Condition) %>% 
+  distinct()
+```
+```{r}
+# Correlation of OD and Lumi in untreated coms
+data_com20 %>% 
+  rstatix::cor_test(vars = c(OD_norm, Lumi_norm), method = "spearman")
+```
+
+
+# Generate plots 
+
+```{r}
+OD_Lumi_Conc_Scatter = Data %>% 
+  ggplot() +
+  geom_point(aes(x = mean_ODnorm, y = log2FC_lumi, color = factor(Conc)), 
+             alpha = 0.75, 
+             size = 2) +
+  geom_smooth(aes(x = OD_norm, y = log2FC_lumi), 
+              data = data_com20,  
+              method=lm, 
+              se=FALSE, 
+              color = "firebrick4") +
+  geom_point(data = data_com20, 
+             aes(x = OD_norm, y = log2FC_lumi), 
+             size = 2.5, 
+             color = "black", 
+             fill = "firebrick4", 
+             shape = 21) +
+  scale_color_viridis_d(option = "G", direction = -1) +
+  theme_light() +
+  labs(x = "Relative OD578nm of community", 
+       y = "Log2(fold change S.Tm luminescence)", 
+       color = "Concentration (uM)") +
+  theme(legend.position = "bottom") +
+  guides(color = guide_legend(nrow=1, byrow = TRUE))
+
+
+OD_Lumi_Conc_Scatter
+```
+
+```{r}
+#Add label to plot
+OD_Lumi_Conc_Labelled = Data %>% 
+  ggplot(aes(x = mean_ODnorm, y = log2FC_lumi, color = factor(Conc), label = Condition_label)) +
+  geom_smooth(aes(x = OD_norm, y = log2FC_lumi), 
+              data = data_com20,  
+              method=lm, 
+              se=FALSE, 
+              color = "firebrick4",
+              inherit.aes = FALSE) +
+  geom_point(data = data_com20, 
+             aes(x = OD_norm, y = log2FC_lumi), 
+             size = 2.5, 
+             color = "black", 
+             fill = "firebrick4", 
+             shape = 21, 
+             inherit.aes = FALSE) +
+  geom_point(alpha = 0.75, 
+             size = 2) +
+  scale_color_viridis_d(option = "G", direction = -1) +
+  geom_text_repel(min.segment.length = 0, 
+                  max.overlaps = Inf, box.padding = 1,
+                  max.time = 20,
+                  max.iter = 100000, 
+                  point.padding = 0.5, 
+                  color = "black") +
+  theme_light() +
+  labs(x = "Relative OD578nm of community", 
+       y = "Log2(fold change S.Tm luminescence)", 
+       color = "Concentration (uM)") +
+  theme(legend.position = "bottom") +
+  guides(color = guide_legend(nrow=1, byrow = TRUE))
+
+OD_Lumi_Conc_Labelled
+
+```
+
+```{r}
+# get the equation of the Com20 dilution regression line 
+linear_model <- lm(log2FC_lumi ~ OD_norm, data=data_com20)
+summary(linear_model)
+
+#log2 of fold change in Luminescence of S Tm = 
+# Intercept + slope * OD_norm = 2.66 - 2.55 * OD_norm 
+# in my case
+```
+
+# Source data
+```{r}
+# Medication data
+Source_1D_meds = OD_Lumi_Conc_Labelled$data %>% 
+  select(-c(drug_conc, Condition_label))
+
+# Dilutions
+Source_1D_dil = data_com20
+
+# write_tsv(Source_1D_meds, file.path(base_dir, "Tables/source_data/Source_1D_meds.tsv"))
+# write_tsv(Source_1D_dil, file.path(base_dir, "Tables/source_data/Source_1D_dil.tsv"))
+```
+
+
+# Add margin boxplots
+```{r}
+
+OD_Lumi_Conc_marginal = ggExtra::ggMarginal(p = OD_Lumi_Conc_Scatter, 
+                                            type = "boxplot", 
+                                            size = 20)
+
+```
+
+
+
+
+# Save plots
+
+```{r}
+# ggpubr::ggexport(OD_Lumi_Conc_Scatter, 
+#                  filename = file.path(figure_dir, "Fig_2_OD_OD_Lumi_Conc_Scatter.pdf"), 
+#                  height = 8,
+#                  width = 9)
+
+# ggpubr::ggexport(OD_Lumi_Conc_Labelled, 
+#                  filename = file.path(figure_dir, "Fig_2_OD_Lumi_Conc_Labelled.pdf"), 
+#                  height = 8,
+#                  width = 9)
+# 
+# ggpubr::ggexport(OD_Lumi_Conc_marginal, 
+#                  filename = file.path(figure_dir, "Fig_2_OD_Lumi_Conc_marginal.pdf"), 
+#                  height = 8,
+#                  width = 9)
+
+```

@@ -1,0 +1,251 @@
+---
+title: "Hits scatter plot and heatmap"
+format: html
+---
+
+Jacobo de la Cuesta-Zuluaga. October 2022.
+The aim of this notebook is to create a figure showing the number of active
+antibacterial and non-antibacterials affecting pathogens and commensal bacteria
+
+# Libraries 
+
+```{r}
+library(tidyverse)
+library(ggpubr)
+library(rstatix)
+library(circlize)
+library(ComplexHeatmap)
+library(ggrepel)
+library(ggdendro)
+library(conflicted)
+```
+
+
+```{r}
+# Solve conflicts
+conflict_prefer("filter", "dplyr")
+```
+
+```{r}
+# Set seed
+set.seed(2112)
+```
+
+
+# Load tables
+
+```{r}
+# Directories
+base_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper"
+data_dir = file.path(base_dir, "Data/Drug_hits_patho_comm")
+figure_dir = file.path(base_dir, "Figures")
+
+
+# Load tables
+AUC_noPatho_raw = file.path(data_dir, "combined_pv.tsv") %>% 
+  read_tsv()
+
+AUC_Patho_raw = file.path(data_dir, "extra_pv.tsv") %>% 
+  read_tsv()
+
+species_annot_raw =  file.path(data_dir, "gut_species_magic40.csv") %>% 
+  read_csv2()
+
+species_annot = species_annot_raw %>% 
+  mutate(Phylum = factor(Phylum, levels = c("Actinobacteria", "Firmicutes", "Fusobacteria", 
+                                            "Bacteroidetes", "Verrucomicrobia", "Proteobacteria"))) %>% 
+  arrange(Phylum) %>%
+  # arrange(Phylum, Class, Order, Family, Genus, Species) %>% 
+  mutate(NT_code = fct_inorder(NT_code)) %>% 
+  filter(NT_code != "NT5085")
+
+COM20_Annot = "/mnt/volume_1/dm_main/projects/Amplicon_Seq_References/COM20_GTDB_Taxonomy.txt" %>% 
+  read_tsv()
+
+prest_annot_raw =  file.path(data_dir, "p2at.tsv") %>% 
+  read_tsv()
+
+# Read ATC code table
+ATC_classification_raw = "/mnt/volume_1/dm_main/databases/atcd/WHO ATC-DDD 2021-12-03.csv" %>% 
+  read_csv()
+
+```
+
+
+```{r}
+# prepare tables
+# Remove tolC mutant
+AUC_table = bind_rows(AUC_noPatho_raw, AUC_Patho_raw) %>% 
+  filter(NT_code != "NT5085")
+
+AUC_table %>% 
+  select(prestwick_ID) %>% 
+  distinct()
+
+AUC_table_export = AUC_table %>% 
+  select(ID = NT_code, Prestwick_ID = prestwick_ID, Mean_AUC = AUC, SD_AUC = AUCsd,
+         P_value = pv_comb, P_adj = pv_comb_fdr_BH, Active = hit, Target_Species = target_species)
+
+AUC_patho_export = AUC_table %>% 
+  left_join(species_annot) %>% 
+  mutate(compound_cat = case_when(target_species == "bacteria" ~ "Antibacterial", 
+                                  human_use == TRUE ~ "non_antibacterial", 
+                                  target_species %in% c("fungi", "human", 
+                                                        "metazoan parasites", 
+                                                        "viruses", 
+                                                        "not a drug") ~ "non_antibacterial")) %>% 
+  filter(!is.na(compound_cat)) %>% 
+  select(ID = NT_code, Species, Prestwick_ID = prestwick_ID, Mean_AUC = AUC, SD_AUC = AUCsd,
+         P_value = pv_comb, P_adj = pv_comb_fdr_BH, Active = hit, Drug_category = compound_cat) %>% 
+    filter(ID %in% AUC_Patho_raw$NT_code)
+
+# AUC_table %>% 
+#   write_tsv(file.path(base_dir, "Tables/Prestw_screen.tsv"))
+# 
+# AUC_patho_export %>% 
+#   write_tsv(file.path(base_dir, "Tables/Prestw_Pathogen_screen.tsv"))
+
+
+
+```
+
+
+
+# Scatterplot 
+```{r}
+# Create table with number of hits by compound class
+# Filter compounds based on target species
+
+hit_counts_raw = AUC_table %>%
+  left_join(species_annot,  by = "NT_code") %>% 
+  select(NT_code, pv_comb, prestwick_ID, target_species, human_use, hit, Pathogen, Gram) %>% 
+  mutate(compound_cat = case_when(target_species == "bacteria" ~ "Antibacterial", 
+                                  human_use == TRUE ~ "non_antibacterial", 
+                                  target_species %in% c("fungi", "human", "metazoan parasites", "viruses", "not a drug") ~ "non_antibacterial")) %>% 
+  filter(!is.na(compound_cat)) %>% 
+  group_by(NT_code, compound_cat, Pathogen, Gram) %>% 
+  count(hit) %>% 
+  ungroup() %>% 
+  filter(hit == TRUE) %>% 
+  left_join(species_annot)
+
+Abb_Species_df = hit_counts_raw %>% 
+  select(NT_code, Species) %>% 
+  distinct() %>% 
+  mutate(Abb_genus = str_sub(Species, 1, 1),
+         Epithet = word(Species, 2, -1), 
+         Abb_Species = str_c(Abb_genus, Epithet, sep = ". ")) %>% 
+  select(NT_code, Abb_Species)
+
+hit_counts = left_join(hit_counts_raw, Abb_Species_df) %>% 
+  relocate(Abb_Species, .after = Species,  by = "NT_code")
+
+```
+
+
+```{r}
+# Scatterplot of antibacterial and non-antibacterials
+drug_class_df = hit_counts %>% 
+  mutate(Gram = if_else(Gram == "neg", "Negative", "Positive"),
+         Pathogen = str_to_title(Pathogen), 
+         Gammaproteobacteria = if_else(Class == "Gammaproteobacteria" & Pathogen == "Pathogen", "Pathogen", "Gut Commensal"), 
+         Gammaproteobacteria = factor(Gammaproteobacteria, levels = c("Gut Commensal", "Pathogen")), 
+         Spp_label = if_else(Gammaproteobacteria == "Pathogen", Abb_Species, NA_character_)) %>% 
+  pivot_wider(values_from = n, names_from = compound_cat) 
+```
+
+
+```{r}
+# Counts
+drug_class_df %>% 
+  count(Gammaproteobacteria)
+
+drug_class_df %>% 
+  nrow()
+
+drug_class_df %>% 
+  group_by(Gammaproteobacteria) %>% 
+  summarise(anti = min(Antibacterial),
+            non = min(non_antibacterial))
+
+```
+
+
+
+```{r fig.height=5, fig.width=8}
+  
+drug_class_scatter = drug_class_df %>% 
+  ggplot(aes(y = Antibacterial, x = non_antibacterial, label = Spp_label)) +
+  geom_point(aes(color = Gammaproteobacteria, pch = Gram), size = 3, alpha = 0.75) +
+  scale_color_manual(values = c("Gut Commensal" = "steelblue2", "Pathogen" = "darkorange2")) +
+  scale_shape_manual(values=c("Positive" = 17, "Negative" = 16))+
+  theme_light() +
+  geom_text_repel(min.segment.length = 0, 
+                  max.overlaps = Inf, box.padding = 1,
+                  max.time = 5,
+                  max.iter = 100000, 
+                  point.padding = 0.5) +
+  coord_fixed(ylim = c(45, 100), xlim = c(5, 100)) +
+  scale_y_continuous(breaks=seq(50, 100, by = 20)) +
+  scale_x_continuous(breaks=seq(10, 90, by = 20)) +
+  labs(y = "Active antibacterial drugs", 
+       x = "Active non-antibacterial drugs", 
+       color = "Pathogen",
+       shape = "Gram stain")
+
+
+drug_class_scatter
+```
+
+
+```{r fig.height=5, fig.width=8}
+# Add margin boxplots
+# See https://stackoverflow.com/questions/47446458/ggextra-plot-format-similar-marginal-plots-for-different-plot-dimensions
+box_y = cowplot::axis_canvas(drug_class_scatter, axis = "y", coord_flip = FALSE) + 
+  geom_boxplot(data = drug_class_df, 
+               aes(x = Antibacterial, y = Gammaproteobacteria, color = Gammaproteobacteria)) + 
+  scale_y_discrete() + 
+  scale_x_continuous(limits = c(45, 100)) +
+  scale_color_manual(values = c("Gut Commensal" = "steelblue2", "Pathogen" = "darkorange2")) +
+  coord_flip() 
+
+box_x = cowplot::axis_canvas(drug_class_scatter, axis = "x") + 
+  geom_boxplot(data = drug_class_df, 
+               aes(x = non_antibacterial, y = Gammaproteobacteria, color = Gammaproteobacteria)) +
+  scale_y_discrete() +
+  scale_x_continuous(limits = c(5, 100)) +
+  scale_color_manual(values = c("Gut Commensal" = "steelblue2", "Pathogen" = "darkorange2"))
+
+drug_class_scatterbox = cowplot::insert_xaxis_grob(drug_class_scatter, box_x, grid::unit(0.5, "in"), position = "top") %>% 
+  cowplot::insert_yaxis_grob(., box_y, grid::unit(0.5, "in"), position = "right")
+
+cowplot::ggdraw(drug_class_scatterbox)
+
+# cowplot::save_plot(filename = file.path(figure_dir, "Fig_1A_class_scatterbox.pdf"),
+#                    plot = drug_class_scatterbox, base_height = 5, base_width = 8)
+```
+
+
+```{r}
+# Stats
+drug_class_df %>% 
+  group_by(Gammaproteobacteria) %>% 
+  select(Gammaproteobacteria, Antibacterial, non_antibacterial) %>% 
+  get_summary_stats(show = c("mean", "median",  "sd", "se"))
+
+
+drug_class_df %>% 
+  select(Abb_Species, Gammaproteobacteria, Antibacterial, non_antibacterial) %>% 
+  pivot_longer(-c(Gammaproteobacteria, Abb_Species), names_to = "Drug_type", values_to = "Counts") %>% 
+  group_by(Drug_type) %>% 
+  t_test(Counts ~ Gammaproteobacteria) %>% 
+  adjust_pvalue()
+```
+
+# Source data
+```{r}
+Source_1A = drug_class_df %>% 
+  select(Species, Antibacterial, non_antibacterial, Spp_label, Gammaproteobacteria, Gram)
+
+# write_tsv(Source_1A, file.path(base_dir, "Tables/source_data/Source_1A.tsv"))
+```

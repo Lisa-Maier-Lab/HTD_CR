@@ -1,0 +1,183 @@
+---
+title: "Replicate correlation plot"
+format: html
+---
+
+Jacobo de la Cuesta-Zuluaga. May 2023.
+The aim of this script is to create the figure of correlation of
+luminescence and OD between replicates
+
+
+# Libraries 
+```{r}
+library(tidyverse)
+library(ggpubr)
+library(conflicted)
+```
+
+
+```{r}
+# Solve conflicts
+conflict_prefer("filter", "dplyr")
+```
+
+
+# Load tables 
+```{r}
+# Directories
+base_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper"
+OD_dir = file.path(base_dir, "Data/Taiyeb_data/fig2_3_4_5_6")
+lumi_dir= file.path(base_dir, "Data/Taiyeb_data/fig7_8_9_10")
+figure_dir = file.path(base_dir, "Figures")
+```
+
+```{r}
+Com20_OD_lumi_raw = file.path(base_dir, 
+                              "/Data/OD_Lumi_Selection/Com20_OD_lumi_select.tsv") %>% 
+  read_tsv()
+```
+
+
+```{r}
+# OD_normalised_raw = file.path(OD_dir, "OD_normalised.csv") %>% 
+#   read_csv()
+# 
+# Lumi_normalised_raw = file.path(lumi_dir, "lumiNorm.csv") %>% 
+#   read_csv()
+
+```
+
+
+# Prepare tables 
+```{r}
+Inhibitors = c("Trimethoprim", "Ofloxacin", "Nalidixic acid", "Oxolinic acid", 
+               "Avermectin B1", "Avermectin")
+
+
+OD_normalised = Com20_OD_lumi_raw %>% 
+  filter(!(Drug %in% Inhibitors), Com == "Com20") %>% 
+  arrange(Replicate) %>% 
+  mutate(Treatment = str_c(Drug, Conc, sep = "_")) %>% 
+  select(Treatment, rel_OD, Replicate) %>% 
+  mutate(Replicate = str_c("Replicate", Replicate, sep = "_")) %>% 
+  pivot_wider(id_cols = Treatment, values_from = rel_OD, names_from = Replicate)
+
+# Lumi table
+Lumi_normalised = Com20_OD_lumi_raw %>% 
+  filter(!(Drug %in% Inhibitors), Com == "Com20") %>% 
+  arrange(Replicate) %>% 
+  mutate(Treatment = str_c(Drug, Conc, sep = "_")) %>% 
+  select(Treatment, rel_Lumi, Replicate) %>% 
+  mutate(Replicate = str_c("Replicate", Replicate, sep = "_")) %>% 
+  pivot_wider(id_cols = Treatment, values_from = rel_Lumi, names_from = Replicate)
+```
+
+
+# Plots 
+```{r}
+# Prepare OD plots
+OD_1v2 = OD_normalised %>% 
+  ggplot(aes(x = Replicate_1, y = Replicate_2)) +
+  geom_point(alpha = 0.65) +
+  theme_light() +
+  coord_cartesian(xlim = c(0, 1.25), ylim = c(0, 1.25)) +
+  stat_cor(aes(label = paste(after_stat(rr.label), after_stat(p.label), sep = "~`,`~")),  label.x = 0, label.y = 1.2) +
+  labs(x = "Relative OD578nm", y = "Relative OD578nm")
+
+OD_1v3 = OD_normalised %>% 
+  ggplot(aes(x = Replicate_1, y = Replicate_3)) +
+  geom_point(alpha = 0.65) +
+  theme_light() +
+  coord_cartesian(xlim = c(0, 1.25), ylim = c(0, 1.25)) +
+  stat_cor(aes(label = paste(after_stat(rr.label), after_stat(p.label), sep = "~`,`~")),  label.x = 0, label.y = 1.2) +
+  labs(x = "Relative OD578nm", y = "Relative OD578nm")
+
+OD_2v3 = OD_normalised %>% 
+  ggplot(aes(x = Replicate_2, y = Replicate_3)) +
+  geom_point(alpha = 0.65) +
+  theme_light() +
+  coord_cartesian(xlim = c(0, 1.25), ylim = c(0, 1.25)) +
+  stat_cor(aes(label = paste(after_stat(rr.label), after_stat(p.label), sep = "~`,`~")),  label.x = 0, label.y = 1.2) +
+  labs(x = "Relative OD578nm", y = "Relative OD578nm")
+```
+
+```{r}
+Lumi_1v2 = Lumi_normalised %>% 
+  ggplot(aes(x = Replicate_1, y = Replicate_2)) +
+  geom_point(alpha = 0.65) +
+  theme_light() +
+  coord_cartesian(xlim = c(0, 35), ylim = c(0, 35)) +
+  stat_cor(aes(label = paste(after_stat(rr.label), after_stat(p.label), sep = "~`,`~")),  label.x = 0, label.y = 33) +
+  labs(x = "Relative S.Tm growth", y = "Relative S.Tm growth")
+
+Lumi_1v3 = Lumi_normalised %>% 
+  ggplot(aes(x = Replicate_1, y = Replicate_3)) +
+  geom_point(alpha = 0.65) +
+  theme_light() +
+  coord_cartesian(xlim = c(0, 35), ylim = c(0, 35)) +
+  stat_cor(aes(label = paste(after_stat(rr.label), after_stat(p.label), sep = "~`,`~")),  label.x = 0, label.y = 33) +
+  labs(x = "Relative S.Tm growth", y = "Relative S.Tm growth")
+
+Lumi_2v3 = Lumi_normalised %>% 
+  ggplot(aes(x = Replicate_2, y = Replicate_3)) +
+  geom_point(alpha = 0.65) +
+  theme_light() +
+  coord_cartesian(xlim = c(0, 35), ylim = c(0, 35)) +
+  stat_cor(aes(label = paste(after_stat(rr.label), after_stat(p.label), sep = "~`,`~")),  label.x = 0, label.y = 33) +
+  labs(x = "Relative S.Tm growth", y = "Relative S.Tm growth")
+
+```
+
+```{r}
+OD_void = OD_normalised %>% 
+  ggplot(aes(x = Replicate_1, y = Replicate_2)) +
+  theme_light() +
+  coord_cartesian(xlim = c(0, 1.25), ylim = c(0, 1.25)) +
+  labs(x = "", y = "") +
+  theme(axis.text = element_blank(), 
+        panel.grid = element_blank(), 
+        panel.border = element_rect(color = "black"), 
+        axis.ticks = element_blank())
+
+OD_void_1 = OD_void +
+  annotate("text", x = 0.625, y = 0.625 , label= "Replicate 1", size = 10)
+
+OD_void_2 = OD_void +
+  annotate("text", x = 0.625, y = 0.625 , label= "Replicate 2", size = 10)
+
+OD_void_3 = OD_void +
+  annotate("text", x = 0.625, y = 0.625 , label= "Replicate 3", size = 10)
+
+```
+
+
+
+```{r fig.height=9, fig.width=9}
+# Combine figures
+Correlation_scatter = ggarrange(OD_void_1, OD_1v2, OD_1v3,
+                                Lumi_1v2, OD_void_2, OD_2v3,
+                                Lumi_1v3, Lumi_2v3, OD_void_3)
+
+Correlation_scatter
+
+# ggexport(Correlation_scatter, 
+#          filename = file.path(figure_dir, "Fig_S2_Replicates_Lumi_OD.pdf"),
+#          width = 9, height = 9)
+
+```
+# Source data
+```{r}
+Source_OD_normalised = OD_normalised %>% 
+  mutate(Measurement = "OD")
+Source_Lumi_normalised = Lumi_normalised %>% 
+  mutate(Measurement = "Luminescence")
+
+Source_ED4E = bind_rows(Source_OD_normalised, Source_Lumi_normalised) %>% 
+  separate(Treatment, into = c("Drug", "Concentration"), sep = "_")
+
+# write_tsv(Source_ED4E, file.path(base_dir, "Tables/source_data/Source_ED4E.tsv"))
+```
+
+
+
+

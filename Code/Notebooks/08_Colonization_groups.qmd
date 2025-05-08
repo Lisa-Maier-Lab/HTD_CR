@@ -1,0 +1,200 @@
+---
+title: "Group treatments by colonization outcome"
+format: html
+---
+Jacobo de la Cuesta-Zuluaga. April 2023
+
+The aim of this notebook is to categorize treatments according to the colonization
+by Salmonella 
+
+
+# Libraries
+
+```{r}
+library(tidyverse)
+library(rstatix)
+library(ggpubr)
+library(ComplexHeatmap)
+library(Maaslin2)
+library(conflicted)
+```
+
+
+```{r}
+# Solve conflicts
+conflict_prefer("filter", "dplyr")
+```
+
+```{r}
+# Set seed
+set.seed(2112)
+```
+
+# Load tables
+
+```{r}
+# Input dirs
+base_dir = "/mnt/volume_1/dm_main/projects/COM20_picrust/"
+
+prediction_dir = file.path(base_dir, "Pipeline_out")
+figures_dir = file.path(base_dir, "out_figures")
+tables_dir = file.path(base_dir, "out_tables")
+
+# Metadata
+metadata_table_raw = file.path(base_dir, "Data/COM20_metadata.tsv") %>% 
+  read_tsv()
+
+# Samples to remove
+remove_samples = metadata_table_raw %>% 
+  filter(Condition == "Comm" |(Condition != "Control" & is.na(signal_norm))) %>% 
+  pull(Sample)
+
+# Drugs inhibiting Salmonella
+inhibitors = c("Trimethoprim", "Ofloxacin", "Nalidixic acid", "Oxolinic acid")
+
+metadata_table = metadata_table_raw %>% 
+  filter(!(Sample %in% remove_samples) & !(Condition %in% inhibitors)) %>% 
+  mutate(Treatment = str_c(Condition, Conc, sep = "_"),
+         Treatment = str_replace(Treatment, "Control_.*", "Control")) %>% 
+  arrange(Condition, Conc, Replicate)
+```
+
+
+
+# Identify treatments with increased lumi 
+```{r}
+# Identify condition/conc combinations that have an increased luminescence
+# Since the number of replicates is low and the number of treatments is high
+# I will select treatments based on the confidence interval of the mean lumi
+# instead of doing a one-way t-test.
+
+# Filter treatments that result in a very low OD
+# Remove lower 10% of OD values
+Mean_OD = metadata_table %>% 
+  filter(Condition != "Control") %>% 
+  group_by(Treatment) %>% 
+  summarise(mean_OD = mean(OD_norm))
+
+
+
+OD_percentiles = quantile(Mean_OD$mean_OD, 
+                          na.rm = TRUE, 
+                          probs = c(0.1, 0.5, 0.9))
+
+Treatment_OD_filt = Mean_OD %>% 
+  filter(mean_OD > OD_percentiles[1])
+
+# Calculate confidence intervals of the mean
+# Classify treatments depending on whether the confidence interval encompasses 
+# a set of threshold values
+Low_lumi_threshold = 0.5
+Up_lumi_threshold = 2
+
+
+Lumi_CI = metadata_table %>% 
+  filter(Treatment %in% Treatment_OD_filt$Treatment) %>% 
+  group_by(Treatment) %>% 
+  get_summary_stats(type = "mean_ci") %>% 
+  filter(variable == "signal_norm") %>% 
+  mutate(Left_ci = mean - (ci/2),
+         Right_ci = mean + (ci/2), 
+         Colonization = case_when(Left_ci < Low_lumi_threshold & Right_ci < Low_lumi_threshold ~ "Salmonella-restricting",
+                                  Left_ci > Up_lumi_threshold & Right_ci > Up_lumi_threshold ~ "Salmonella-favouring",
+                                  TRUE ~ "No effect"))
+# Add to metadata table
+metadata_colonization = left_join(metadata_table, 
+                                  select(Lumi_CI, Treatment, Colonization)) %>% 
+  mutate(Colonization = if_else(Condition == "Control", "Control", Colonization), 
+         Colonization = factor(Colonization, levels = c("Salmonella-favouring", "Salmonella-restricting", "No effect","Control")))
+```
+
+# Illustrate colonization classification 
+
+```{r fig.height=3, fig.width=5}
+# Create example df
+CI_example_df = data.frame(Colonization = c("Salmonella-favouring", "Salmonella-restricting", "No effect"),
+                           Mean_Lumi = c(2.3, 0.25, 0.9)) %>% 
+  mutate(Low = Mean_Lumi - 0.15, 
+         Up = Mean_Lumi + 0.15) 
+
+CI_example_df
+
+CI_example_plot = CI_example_df %>%  
+  ggplot(aes(x = Colonization, y = Mean_Lumi)) +
+  geom_rect(ymin = 0.5, ymax = 2, xmin = 0, xmax = 4, fill = "gray90") +
+  geom_hline(yintercept = c(0.5, 2), linetype = "longdash", color = "gray") +
+  geom_hline(yintercept = 1, linetype = "dotted") +
+  geom_point(size = 3) +
+  theme_light() +
+  geom_linerange(aes(ymin = Low, ymax = Up)) +
+  # coord_trans(y = "log2") +
+  # scale_y_continuous(breaks = 2^(-2:2), limits = c(2^-5, 5)) +
+  coord_flip() +
+  labs(x = "Colonization", y = "Normalized luminescence") 
+
+CI_example_plot
+
+# ggexport(CI_example_plot, 
+#          filename = file.path(figures_dir, "Fig_S3_Colonization_example.pdf"), 
+#          width = 5, height = 3)
+```
+
+# Plots and stats by colonization 
+```{r}
+metadata_colonization %>% 
+  filter(!is.na(Colonization), Colonization != "Control") %>% 
+  select(Colonization, signal_norm, OD_norm) %>% 
+  group_by(Colonization) %>% 
+  get_summary_stats(type = "mean_se")
+
+Treatment_Colonization_df = metadata_colonization %>% 
+  select(Treatment, Colonization) %>% 
+  distinct() %>% 
+  filter(!is.na(Colonization), Colonization != "Control")
+
+Colonization_dots_df = metadata_colonization %>% 
+  filter(!is.na(Colonization), Colonization != "Control") %>% 
+  group_by(Treatment) %>% 
+  summarise(mean_signal = mean(signal_norm), mean_OD = mean(OD_norm)) %>% 
+  ungroup() %>% 
+  left_join(Treatment_Colonization_df)
+
+Colonization_OD_jitter = Colonization_dots_df %>% 
+  ggplot(aes(x = Colonization, y = mean_OD)) +
+  geom_jitter(width = 0.1, height = 0, alpha = 0.7) +
+  stat_summary(fun.data = mean_se, fun.args = list(mult = 1), geom = "pointrange", color = "firebrick3") +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  theme_light() +
+  labs(x = "Colonization", y = "Relative OD 578nm of community") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+Colonization_lumi_jitter = Colonization_dots_df %>% 
+  ggplot(aes(x = Colonization, y = (mean_signal))) +
+  geom_jitter(width = 0.1, height = 0, alpha = 0.7) +
+  stat_summary(fun.data = mean_se, fun.args = list(mult = 1), geom = "pointrange", color = "firebrick3") +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  theme_light() +
+  coord_trans(y = "log2") +
+  scale_y_continuous(breaks = 2^(-4:4), limits = c(2^-5, 16)) +
+  labs(x = "Colonization", y = "Log2(fold change S. Tm luminescence)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+Colonization_jitter = ggarrange(Colonization_lumi_jitter, 
+                                Colonization_OD_jitter, ncol = 2)
+```
+
+```{r fig.width=5, fig.height=5}
+Colonization_dots_df %>% 
+  count(Colonization)
+
+Colonization_jitter
+```
+
+
+```{r fig.width=5, fig.height=5}
+# Export
+# ggexport(Colonization_jitter, 
+#          filename = file.path(figures_dir, "Fig_X_Colonization_jitter.pdf"), 
+#          width = 5, height = 5)
+```
+

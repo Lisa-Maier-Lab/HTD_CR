@@ -1,0 +1,362 @@
+---
+title: "Comparison of predicted COM20 and COM21 potential to human samples"
+format: html
+---
+
+Jacobo de la Cuesta-Zuluaga. October 2022.
+To compare the predicted metagenome from COM20 to metagenome-sequenced human samples
+
+# Notes
+The idea is to compare what is the metabolic potential of the synth communities
+COM20 and COM21 compared to actual human metagenomes. For this, I will download publicly 
+available data from the Picrtust2 repo, which was used for their own benchmarks.
+
+The advantage of this approach is that the data is readily available in the exact
+same format that I have the COM20 and COM21 predictions, precisely because they are from the
+same software.
+
+The idea, thus, is to determine how many different pathways are present in both
+sets of samples and see what is their overlap.
+ 
+
+# Libraries 
+
+```{r}
+library(tidyverse)
+library(ComplexUpset)
+library(conflicted)
+```
+
+
+```{r}
+# Solve conflicts
+conflict_prefer("filter", "dplyr")
+```
+
+
+# Load tables
+
+```{r}
+# COM20 dirs
+base_dir = "/mnt/volume_1/dm_main/projects/COM20_picrust"
+prediction_dir = file.path(base_dir, "Pipeline_out")
+figures_dir = file.path(base_dir, "out_figures")
+tables_dir = file.path(base_dir, "out_tables")
+
+
+# Metadata
+metadata_table = file.path(base_dir, "Data/COM20_metadata.tsv") %>% 
+  read_tsv() %>% 
+  mutate(Condition = str_replace(Condition, "Comm", "Control"))
+
+COM20_controls = metadata_table %>% 
+  filter(Condition == "Control") %>% 
+  pull(Sample)
+
+# Unstrat metagenome
+metacyc_unstrat_raw = file.path(prediction_dir, "pathways_out/path_abun_unstrat.tsv.gz") %>% 
+  read_tsv()
+
+# Restrict to controls
+metacyc_unstrat = metacyc_unstrat_raw %>%
+  select(pathway, one_of(COM20_controls)) %>% 
+  filter(!(pathway %in% c("UNMAPPED", "UNINTEGRATED")))
+```
+
+```{r}
+# HMP samples
+HMP_metagenome = "https://raw.githubusercontent.com/gavinmdouglas/picrust2_manuscript/master/data/mgs_validation/hmp/humann2_pathabun_unstrat.tsv" %>% 
+  read_tsv() %>% 
+  filter(!(pathway %in% c("UNMAPPED", "UNINTEGRATED")))
+# Cameroon samples
+Cameroon_metagenome = "https://raw.githubusercontent.com/gavinmdouglas/picrust2_manuscript/master/data/mgs_validation/cameroon/humann2_pathabun_unstrat.tsv" %>% 
+  read_tsv() %>% 
+  filter(!(pathway %in% c("UNMAPPED", "UNINTEGRATED")))
+```
+
+```{r}
+# COM21 samples
+COM21_dir = file.path(base_dir, "COM21_out")
+
+# Unstrat metagenome
+COM21_unstrat_raw = file.path(COM21_dir, "pathways_out/path_abun_unstrat.tsv.gz") %>% 
+  read_tsv()
+
+# Restrict to controls
+COM21_unstrat = COM21_unstrat_raw %>%
+  filter(!(pathway %in% c("UNMAPPED", "UNINTEGRATED")))
+```
+
+```{r}
+# Gnoto samples
+Gnoto_dir = file.path(base_dir, "Gnoto_out")
+
+# Unstrat metagenome
+Gnoto_unstrat_raw = file.path(Gnoto_dir, "pathways_out/path_abun_unstrat.tsv.gz") %>% 
+  read_tsv()
+
+# Restrict to controls
+Gnoto_unstrat = Gnoto_unstrat_raw %>%
+  filter(!(pathway %in% c("UNMAPPED", "UNINTEGRATED")))
+```
+
+# Prevalent pathways
+
+```{r}
+# Calculate the prevalence of each pathway as number of samples where abundance > 0
+pwy_prevalence_HMP = HMP_metagenome %>% 
+  mutate_if(is.numeric, .funs = function(x) if_else(x == 0, 0, 1)) %>% 
+  pivot_longer(-pathway, names_to = "Sample", values_to = "Present") %>% 
+  group_by(pathway) %>% 
+  summarize(Observed = sum(Present)) %>% 
+  mutate(Prevalence = (Observed/(ncol(HMP_metagenome) - 1)) * 100) 
+
+pwy_prevalence_Cameroon = Cameroon_metagenome %>% 
+  mutate_if(is.numeric, .funs = function(x) if_else(x == 0, 0, 1)) %>% 
+  pivot_longer(-pathway, names_to = "Sample", values_to = "Present") %>% 
+  group_by(pathway) %>% 
+  summarize(Observed = sum(Present)) %>% 
+  mutate(Prevalence = (Observed/(ncol(Cameroon_metagenome) - 1)) * 100) 
+
+pwy_prevalence_COM20 = metacyc_unstrat %>% 
+  mutate_if(is.numeric, .funs = function(x) if_else(x == 0, 0, 1)) %>% 
+  pivot_longer(-pathway, names_to = "Sample", values_to = "Present") %>% 
+  group_by(pathway) %>% 
+  summarize(Observed = sum(Present)) %>% 
+  mutate(Prevalence = (Observed/(ncol(metacyc_unstrat) - 1)) * 100) 
+
+pwy_prevalence_COM21 = COM21_unstrat %>% 
+  mutate_if(is.numeric, .funs = function(x) if_else(x == 0, 0, 1)) %>% 
+  pivot_longer(-pathway, names_to = "Sample", values_to = "Present") %>% 
+  group_by(pathway) %>% 
+  summarize(Observed = sum(Present)) %>% 
+  mutate(Prevalence = (Observed/(ncol(COM21_unstrat) - 1)) * 100) 
+
+pwy_prevalence_Gnoto = Gnoto_unstrat %>% 
+  mutate_if(is.numeric, .funs = function(x) if_else(x == 0, 0, 1)) %>% 
+  pivot_longer(-pathway, names_to = "Sample", values_to = "Present") %>% 
+  group_by(pathway) %>% 
+  summarize(Observed = sum(Present)) %>% 
+  mutate(Prevalence = (Observed/(ncol(Gnoto_unstrat) - 1)) * 100) 
+```
+
+```{r}
+# Define a prevalent pathway as observed in > 20% of samples of a dataset
+top_prev_HMP = pwy_prevalence_HMP %>% 
+  filter(Prevalence > 20) 
+
+top_prev_Cameroon = pwy_prevalence_Cameroon %>% 
+  filter(Prevalence > 20) 
+
+top_prev_COM20 = pwy_prevalence_COM20 %>% 
+  filter(Prevalence > 20) 
+
+top_prev_COM21 = pwy_prevalence_COM21 %>% 
+  filter(Prevalence > 20) 
+
+top_prev_Gnoto = pwy_prevalence_Gnoto %>% 
+  filter(Prevalence > 20) 
+
+```
+
+
+
+# COM20 and COM21
+```{r}
+# All pathways observed
+COM20_COM21_union = union(top_prev_COM21$pathway, top_prev_COM20$pathway)
+
+# Intersection of COM20 with COM21
+COM20_COM21_intersect = intersect(top_prev_COM21$pathway, top_prev_COM20$pathway)
+
+# What is the overlap between COM20 and COM21?
+round(x = length(COM20_COM21_intersect)/nrow(top_prev_COM21) * 100, 2)
+```
+
+```{r}
+# Present in COM20 but absent in COM21
+pwy_COM20_nCOM21 = setdiff(top_prev_COM20$pathway, top_prev_COM21$pathway)
+
+# Present in COM21 but absent in COM20
+pwy_COM21_nCOM20 = setdiff(top_prev_COM21$pathway, top_prev_COM20$pathway)
+```
+*Note* that this last think makes sense. All pwys present in COM20 are also
+present in COM21, however, not all pwys observed in COM21 are present in COM20.
+
+
+
+# COM20 and human samples
+```{r}
+# All pathways observed
+COM20_HMP_union = union(top_prev_HMP$pathway, top_prev_COM20$pathway)
+COM20_Cameroon_union = union(top_prev_Cameroon$pathway, top_prev_COM20$pathway)
+
+# Intersection of COM20 with human datasets
+COM20_HMP_intersect = intersect(top_prev_HMP$pathway, top_prev_COM20$pathway)
+COM20_Cameroon_intersect = intersect(top_prev_Cameroon$pathway, top_prev_COM20$pathway)
+
+# How much do the pathways on COM20 cover human metagenomes?
+round(x = length(COM20_HMP_intersect)/nrow(top_prev_HMP) * 100, 2)
+round(x = length(COM20_Cameroon_intersect)/nrow(top_prev_Cameroon) * 100, 2)
+```
+
+```{r}
+# Present in COM20 but absent in HMP
+pwy_COM20_nHMP = setdiff(top_prev_COM20$pathway, top_prev_HMP$pathway)
+
+# Present in HMP but absent in COM20
+pwy_HMP_nCOM20 = setdiff(top_prev_HMP$pathway, top_prev_COM20$pathway)
+
+# Present in COM20 but absent in cameroon
+pwy_COM20_nCam = setdiff(top_prev_COM20$pathway, top_prev_Cameroon$pathway)
+
+# Present in Cameroon but absent in COM20
+pwy_Cam_nCOM20 = setdiff(top_prev_Cameroon$pathway, top_prev_COM20$pathway)
+```
+
+
+
+# COM21 and human samples
+```{r}
+# All pathways observed
+COM21_HMP_union = union(top_prev_HMP$pathway, top_prev_COM21$pathway)
+COM21_Cameroon_union = union(top_prev_Cameroon$pathway, top_prev_COM21$pathway)
+
+# Intersection of COM21 with human datasets
+COM21_HMP_intersect = intersect(top_prev_HMP$pathway, top_prev_COM21$pathway)
+COM21_Cameroon_intersect = intersect(top_prev_Cameroon$pathway, top_prev_COM21$pathway)
+
+# How much do the pathways on COM21 cover human metagenomes?
+round(x = length(COM21_HMP_intersect)/nrow(top_prev_HMP) * 100, 2)
+round(x = length(COM21_Cameroon_intersect)/nrow(top_prev_Cameroon) * 100, 2)
+```
+
+```{r}
+# Present in COM21 but absent in HMP
+pwy_COM21_nHMP = setdiff(top_prev_COM21$pathway, top_prev_HMP$pathway)
+
+# Present in HMP but absent in COM21
+pwy_HMP_nCOM21 = setdiff(top_prev_HMP$pathway, top_prev_COM21$pathway)
+
+# Present in COM21 but absent in cameroon
+pwy_COM21_nCam = setdiff(top_prev_COM21$pathway, top_prev_Cameroon$pathway)
+
+# Present in Cameroon but absent in COM21
+pwy_Cam_nCOM21 = setdiff(top_prev_Cameroon$pathway, top_prev_COM21$pathway)
+```
+
+
+
+# Gnoto and COM20 
+```{r}
+# All pathways observed
+COM20_Gnoto_union = union(top_prev_Gnoto$pathway, top_prev_COM20$pathway)
+
+# Intersection of COM20 with Gnoto
+COM20_Gnoto_intersect = intersect(top_prev_Gnoto$pathway, top_prev_COM20$pathway)
+
+# What is the overlap between COM20 and Gnoto?
+round(x = length(COM20_Gnoto_intersect)/nrow(top_prev_COM20) * 100, 2)
+```
+
+```{r}
+# Present in COM20 but absent in Gnoto
+pwy_COM20_nGnoto = setdiff(top_prev_COM20$pathway, top_prev_Gnoto$pathway)
+
+# Present in Gnoto but absent in COM20
+pwy_Gnoto_nCOM20 = setdiff(top_prev_Gnoto$pathway, top_prev_COM20$pathway)
+```
+*Note* that this last think makes sense. All pwys present in COM20 are also
+present in Gnoto, however, not all pwys observed in Gnoto are present in COM20.
+
+
+
+# Gnoto and human samples 
+```{r}
+# All pathways observed
+Gnoto_HMP_union = union(top_prev_HMP$pathway, top_prev_Gnoto$pathway)
+Gnoto_Cameroon_union = union(top_prev_Cameroon$pathway, top_prev_Gnoto$pathway)
+
+# Intersection of Gnoto with human datasets
+Gnoto_HMP_intersect = intersect(top_prev_HMP$pathway, top_prev_Gnoto$pathway)
+Gnoto_Cameroon_intersect = intersect(top_prev_Cameroon$pathway, top_prev_Gnoto$pathway)
+
+# How much do the pathways on Gnoto cover human metagenomes?
+round(x = length(Gnoto_HMP_intersect)/nrow(top_prev_HMP) * 100, 2)
+round(x = length(Gnoto_Cameroon_intersect)/nrow(top_prev_Cameroon) * 100, 2)
+```
+
+```{r}
+# Present in Gnoto but absent in HMP
+pwy_Gnoto_nHMP = setdiff(top_prev_Gnoto$pathway, top_prev_HMP$pathway)
+
+# Present in HMP but absent in Gnoto
+pwy_HMP_nGnoto = setdiff(top_prev_HMP$pathway, top_prev_Gnoto$pathway)
+
+# Present in Gnoto but absent in cameroon
+pwy_Gnoto_nCam = setdiff(top_prev_Gnoto$pathway, top_prev_Cameroon$pathway)
+
+# Present in Cameroon but absent in Gnoto
+pwy_Cam_nGnoto = setdiff(top_prev_Cameroon$pathway, top_prev_Gnoto$pathway)
+```
+
+
+# Tables 
+```{r}
+# Write tables of pathways of each category
+COM20_HMP_Categories = data.frame(Pathway = c(COM20_HMP_intersect, pwy_COM20_nHMP, pwy_HMP_nCOM20),
+                                  Category = c(rep("Shared", length(COM20_HMP_intersect)),
+                                               rep("Unique COM20", length(pwy_COM20_nHMP)),
+                                               rep("Unique HMP", length(pwy_HMP_nCOM20))))
+
+COM20_HMP_Categories %>% 
+  head
+
+# COM20_HMP_Categories %>% 
+#   write_tsv(file.path(tables_dir, "COM20_HMP_Pathways.tsv"))
+```
+
+
+# UpSet Plot of all communities 
+
+```{r}
+# Create data frame with P/A of all pathways in all communities
+Upset_df = c(top_prev_Cameroon$pathway, top_prev_HMP$pathway, 
+             top_prev_COM21$pathway, top_prev_COM20$pathway,
+             top_prev_Gnoto$pathway) %>% 
+  unique() %>% 
+  data.frame(Pathway = .) %>% 
+  mutate(Cameroon = Pathway %in% top_prev_Cameroon$pathway,
+         HMP =  Pathway %in% top_prev_HMP$pathway,
+         `COM20 in vitro` =  Pathway %in% top_prev_COM20$pathway,
+         `COM21 in vitro` =  Pathway %in% top_prev_COM21$pathway,
+         `Defined colonized` =  Pathway %in% top_prev_Gnoto$pathway) %>% 
+  column_to_rownames("Pathway")
+```
+
+```{r fig.height=6, fig.width=7}
+# Plot
+# To remove the intersection size above the bars add 
+# base_annotations=list('Intersection size' = intersection_size(counts=FALSE))
+Complete_UpSet = upset(Upset_df, 
+                       intersect = colnames(Upset_df), 
+                       name = "Community") &
+  theme(panel.border = element_rect(colour = "black", fill = NA),
+        panel.grid.minor = element_blank()) 
+
+Complete_UpSet
+
+# ggsave(file.path(figures_dir, "Fig_S2_Pathway_UpSet.pdf"), Complete_UpSet, width = 7, height = 6)
+```
+
+# Source data
+```{r}
+Source_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper/Tables/source_data"
+
+Source_ED4A = Upset_df %>% 
+  rownames_to_column("Pathway")
+# 
+# write_tsv(Source_ED4A, file.path(Source_dir, "Source_ED4A.tsv"))
+```
+
+

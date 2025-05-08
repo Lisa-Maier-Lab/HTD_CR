@@ -1,0 +1,328 @@
+---
+title: "Figure MICs"
+format: html
+---
+
+Jacobo de la Cuesta-Zuluaga. November 2022
+
+The aim of this script is to create the figure of the MICs of the tested compounds
+on the various microbial taxa
+
+
+# Libraries 
+
+```{r}
+library(tidyverse)
+library(ggpubr)
+library(conflicted)
+```
+
+
+```{r}
+# Solve conflicts
+conflict_prefer("filter", "dplyr")
+```
+
+
+
+# Load tables
+```{r}
+# Directories
+base_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper"
+data_dir = file.path(base_dir, "/Data/Drug_hits_patho_comm/")
+tables_dir = file.path(base_dir, "Tables")
+figure_dir = file.path(base_dir, "Figures")
+
+# MIC data
+MICs_raw = file.path(data_dir, "2023_07_20_MICs_Com20.tsv") %>% 
+  read_tsv()
+
+# Species annotation
+species_annot_raw =  file.path(data_dir, "gut_species_magic40.csv") %>% 
+  read_csv2()
+
+# Drug categories
+prest_annot_raw =  file.path(data_dir, "p2at.tsv") %>% 
+  read_tsv()
+
+# Read ATC code table
+ATC_classification_raw = "/mnt/volume_1/dm_main/databases/atcd/WHO ATC-DDD 2021-12-03.csv" %>% 
+  read_csv()
+
+```
+
+
+# Prepare tables 
+```{r}
+# Species table
+species_annot = species_annot_raw %>% 
+  mutate(Phylum = factor(Phylum, levels = c("Actinobacteria", "Firmicutes", "Fusobacteria", 
+                                            "Bacteroidetes", "Verrucomicrobia", "Proteobacteria"))) %>% 
+  arrange(Phylum) %>%
+  mutate(NT_code = fct_inorder(NT_code)) %>% 
+  filter(NT_code != "NT5085")
+
+# Fix names in MIC table
+# Create assay drugs annotation table
+MICs_fixed = MICs_raw %>% 
+  filter(!(drug %in% c("Gallidermin", "L15", "Rhodomyrtone", "PPAP23", "Polyethylene",
+                       "Trimethoprim", "Ofloxacin", "Nalidixic acid", "Oxolinic acid",
+                       "Medroxyprogesterone Acetate", "Rivaroxaban")),
+         Species != "Salmonella enterica typhimurium TolC",
+         strain  != "LM0003",
+         strain != "NT5083") %>% 
+  mutate(drug_short = word(drug, start = 1, end = 1), 
+         drug_short = case_when(drug == "Dicoumarol" ~ "Dicumarol",
+                                drug_short == "Loperamid" ~ "Loperamide",
+                                drug_short == "L-Thyroxin" ~ "Thyroxine",
+                                drug_short == "Medroxyprogesterone" ~ "medroxyprogesterone",
+                                drug_short == "Clomipramin" ~ "Clomipramine", 
+                                drug_short == "Clinidipine" ~ "Cilnidipine", 
+                                drug_short == "Metronidazol" ~ "Metronidazole", 
+                                drug_short == "Sertralin" ~ "Sertraline", 
+                   TRUE ~ drug_short)) 
+
+# Antibacterials according to Prestwick table
+Prestwick_drugs = prest_annot_raw %>% 
+  mutate(drug_short = word(chemical_name, start = 1, end = 1),
+         drug_short = str_remove(drug_short, ",")) 
+
+Prestwick_antibacterials = Prestwick_drugs %>% 
+  filter(target_species == "bacteria") %>% 
+  select(prestwick_ID, chemical_name, drug_short, target_species, therapeutic_effect) %>% 
+  distinct()
+
+# Combine tables
+MICs_categories = MICs_fixed %>% 
+  mutate(compound_cat = if_else(drug_short %in% Prestwick_antibacterials$drug_short,
+                                "Antibacterial", "Non-antibacterial"), 
+         Gammaproteobacteria = if_else(Class == "Gammaproteobacteria" & str_detect(Category, "pathogen"), "Pathogen", "Gut Commensal"), 
+         Gammaproteobacteria = factor(Gammaproteobacteria, levels = c("Gut Commensal", "Pathogen")),
+         qualifier = str_replace(qualifier, "<", "="),
+         Conc = if_else(Conc == 0.625, 1.25, Conc),
+         compound_cat = case_when(drug == "Novobiocin" ~ "Antibacterial",
+                                  TRUE ~ compound_cat))
+
+```
+
+# Plots
+```{r}
+# Create table with the actual count per concentration
+#  \u03bcM for uM
+MICs_counts = MICs_categories %>% 
+  mutate(drug = fct_reorder(drug, Conc, median),
+         Band = str_c(qualifier, Conc, sep = "_"),
+         Band = case_when(Band == "=_1.25" ~ "< 1.25", 
+                          Band == "=_2.5" ~ "1.25-2.5", 
+                          Band == "=_5" ~ "2.5-5", 
+                          Band == "=_10" ~ "5-10", 
+                          Band == "=_20" ~ "10-20", 
+                          Band == "=_40" ~ "20-40", 
+                          Band == "=_80" ~ "40-80", 
+                          Band == "=_160" ~ "80-160", 
+                          Band == ">_5" ~ "> 5", 
+                          Band == ">_10" ~ "> 10", 
+                          Band == ">_20" ~ "> 20", 
+                          Band == ">_40" ~ "> 40", 
+                          Band == ">_80" ~ "> 80", 
+                          Band == ">_160" ~ "> 160"),
+         Band = factor(Band, levels = c("< 1.25", 
+                                        "1.25-2.5", 
+                                        "2.5-5", 
+                                        "> 5",
+                                        "5-10", 
+                                        "> 10", 
+                                        "10-20", 
+                                        "> 20",
+                                        "20-40",
+                                        "> 40",
+                                        "40-80", 
+                                        "> 80", 
+                                        "80-160", 
+                                        "> 160"))) %>% 
+  group_by(drug, compound_cat, Gammaproteobacteria, Band) %>% 
+  count(Band) %>%
+  ungroup()
+
+# Concentrations tested
+MICs_counts 
+
+```
+
+```{r}
+MICs_props = MICs_counts %>% 
+  group_by(drug, compound_cat, Gammaproteobacteria) %>% 
+  summarise(Total = sum(n)) %>% 
+  ungroup() %>% 
+  left_join(MICs_counts) %>% 
+  mutate(Prop = (n/Total)*100) %>% 
+  relocate(Total, .after = "n")
+```
+
+```{r fig.height=7, fig.width=13}
+# Plot with circle are representing the count
+# of strains inhibited at a given concentration
+MIC_area_dotplot = MICs_props %>% 
+  ggplot(aes(x = drug, y = Band)) +
+  geom_point(aes(size = Prop, 
+                 fill = Gammaproteobacteria), 
+             color = "gray30",
+             pch = 21,
+             alpha = 0.7, 
+             position = position_dodge(width = 0.5)) +
+  theme_light() +
+  scale_fill_manual(values = c("Gut Commensal" = "steelblue2", "Pathogen" = "darkorange2")) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 8), 
+        axis.text.y = element_text(size = 7), 
+        legend.position = "bottom") +
+  scale_size_continuous(range = c(1, 3.9),
+                        breaks = c(5, 10, 20, 40, 80)) +
+  facet_grid(~compound_cat, scales = "free_x", space = "free") +
+  labs(x = "Compound", y = "IC25", fill = "Pathogen", size = "Inhibited strains (%)")
+# scale_y_continuous(
+#   breaks = c(0.625, 1.25, 2.5, 5, 10, 20, 40, 80, 160),
+#   labels = c(0.625, 1.25, 2.5, 5, 10, 20, 40, 80, 160))
+# )
+
+MIC_area_dotplot
+```
+
+
+```{r fig.height=8, fig.width=13}
+# Number tests per microbe group
+Pathogen_count = MICs_counts %>% 
+  group_by(Gammaproteobacteria) %>% 
+  summarise(pathogen_n = sum(n))
+
+# join MIC with total number of tests per microbe type
+# Calculate proportion of microbes inhibited by microbe type
+# for heatmap
+Side_heatmap_df = MICs_counts %>% 
+  group_by(Gammaproteobacteria, Band) %>% 
+  summarise(sum_compounds = sum(n)) %>% 
+  ungroup() %>% 
+  complete(Gammaproteobacteria, Band, fill = list(sum_compounds = 0)) %>% 
+  full_join(Pathogen_count) %>% 
+  mutate(Proportion_inhibited = (sum_compounds/pathogen_n)*100) %>% 
+  group_by(Gammaproteobacteria) %>% 
+  mutate(Cum_inhibition = cumsum(Proportion_inhibited)) %>% 
+  ungroup()
+
+
+# Check that each group adds to 100%
+Side_heatmap_df %>% 
+  group_by(Gammaproteobacteria) %>% 
+  mutate(cum_prop = cumsum(Proportion_inhibited)) %>% 
+  summarise(sum(Proportion_inhibited))
+
+```
+
+```{r fig.height=7, fig.width=12}
+# Plot heatmap
+Side_heatmap = Side_heatmap_df %>% 
+  ggplot(aes(x = Gammaproteobacteria, y = Band)) +
+  geom_tile(aes(fill = Gammaproteobacteria, alpha = Cum_inhibition)) +
+  scale_fill_manual(values = c("Gut Commensal" = "steelblue2", "Pathogen" = "darkorange2")) +
+  geom_text(aes(label = round(Cum_inhibition, 1)),
+            size = 2, color = "black", alpha = 0.7) + 
+  theme_light() +
+  labs(x = "Pathogen", y = "IC25", alpha = "Inhibited strains (%)") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, size = 8), 
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank(),
+        panel.grid = element_blank(),
+        legend.position = "bottom") +
+  guides(fill = "none") +
+  facet_grid(~"Total")
+```
+
+```{r fig.height=7, fig.width=12}
+# Function to remove legend from plot
+rm_legend = function(p){p + theme(legend.position = "none")}
+
+# Extrct legends from plots
+leg_MIC = get_legend(MIC_area_dotplot)
+leg_heat = get_legend(Side_heatmap)
+
+# Combine legends
+Legends = ggarrange(leg_MIC, leg_heat, nrow = 2)
+
+# Combine plots
+Combined_nolegend = ggarrange(rm_legend(MIC_area_dotplot), rm_legend(Side_heatmap),
+                  align = "h", 
+                  widths = c(17,1))
+
+# Final plot of area and heatmap plus legends
+Combined_legend = ggarrange(Combined_nolegend, Legends, 
+                            nrow = 2, 
+                            heights = c(10,1))
+
+Combined_legend
+```
+
+
+# Export Figures
+
+```{r}
+# ggsave(plot = Combined_legend, 
+#        filename = file.path(figure_dir, "Fig_1_MIC_area_dotplot.pdf"), 
+#        height = 7,
+#        width = 12,
+#        device=cairo_pdf)
+```
+
+
+# Export table 
+```{r}
+MIC_export_df = MICs_categories %>%   
+  mutate(drug = fct_reorder(drug, Conc, median),
+         Band = str_c(qualifier, Conc, sep = "_"),
+         Band = case_when(Band == "=_1.25" ~ "< 1.25", 
+                          Band == "=_2.5" ~ "1.25-2.5", 
+                          Band == "=_5" ~ "2.5-5", 
+                          Band == "=_10" ~ "5-10", 
+                          Band == "=_20" ~ "10-20", 
+                          Band == "=_40" ~ "20-40", 
+                          Band == "=_80" ~ "40-80", 
+                          Band == "=_160" ~ "80-160", 
+                          Band == ">_5" ~ "> 5", 
+                          Band == ">_10" ~ "> 10", 
+                          Band == ">_20" ~ "> 20", 
+                          Band == ">_40" ~ "> 40", 
+                          Band == ">_80" ~ "> 80", 
+                          Band == ">_160" ~ "> 160"),
+         Band = factor(Band, levels = c("< 1.25", 
+                                        "1.25-2.5", 
+                                        "2.5-5", 
+                                        "> 5",
+                                        "5-10", 
+                                        "> 10", 
+                                        "10-20", 
+                                        "> 20",
+                                        "20-40",
+                                        "> 40",
+                                        "40-80", 
+                                        "> 80", 
+                                        "80-160", 
+                                        "> 160"))) %>% 
+  select(ID = strain, Species, Condition = drug, IC25 = Band,
+         Group = Gammaproteobacteria)
+
+# MIC_export_df %>%
+#   write_tsv(file.path(tables_dir, "IC25_table.tsv"))
+```
+
+# Source data
+```{r}
+Source_ED2A_circles = MICs_props %>% 
+  select(-c(n, Total))
+
+Source_ED2A_heat = Side_heatmap_df %>% 
+  select(Gammaproteobacteria, Band, Cum_inhibition)
+
+# write_tsv(Source_ED2A_circles, file.path(base_dir, "Tables/source_data/Source_ED2A_circles.tsv"))
+# write_tsv(Source_ED2A_heat, file.path(base_dir, "Tables/source_data/Source_ED2A_heat.tsv"))
+
+```
+
+

@@ -1,0 +1,290 @@
+---
+title: "Mice 16S rRNA alpha and beta diversity"
+format: html
+---
+
+Jacobo de la Cuesta-Zuluaga. June 2023.
+The aim of this notebook is to assess differences in taxa abundance 
+in mice in days 0 and 6
+
+
+# Libraries
+```{r}
+library(tidyverse)
+library(conflicted)
+library(GUniFrac)
+library(vegan)
+library(rstatix)
+```
+
+```{r}
+conflicts_prefer(dplyr::filter())
+conflicts_prefer(purrr::map())
+```
+
+```{r}
+# Seed
+set.seed(2112)
+```
+
+
+# Paths
+```{r}
+# Project directories
+base_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper/"
+Gnoto_16S_dir = "/mnt/volume_1/dm_main/projects/23_05_Anne_Jacobo_Mice/dada2_out"
+ref_dir = "/mnt/volume_1/dm_main/projects/Amplicon_Seq_References/"
+
+
+# ASV table
+Gnoto_asv_raw = file.path(Gnoto_16S_dir, "2023_05_Gnoto_ASV_table.tsv") %>% 
+  read_tsv()
+
+Gnoto_collapsed = "/mnt/volume_1/dm_main/projects/23_05_Anne_Jacobo_Mice/tables/Gnoto_Collapsed_COM20.tsv" %>% 
+  read_tsv()
+
+# taxonomy table
+Gnoto_full_tax_raw = file.path(Gnoto_16S_dir, "2023_05_Gnoto_taxonomy_full.tsv") %>% 
+  read_tsv()
+
+# taxonomy table
+Gnoto_taxonomy_raw = file.path(Gnoto_16S_dir, "2023_05_Gnoto_taxonomy_table.tsv") %>% 
+  read_tsv()
+
+# Phylogeny
+Gnoto_tree_raw =  file.path(Gnoto_16S_dir, "2023_05_Gnoto_tree.tre") %>% 
+  ape::read.tree()
+
+# Mice metadata
+Gnoto_metadata = "/mnt/volume_1/dm_main/projects/23_05_Anne_Jacobo_Mice/tables/Gnoto_metadata_filt.tsv" %>% 
+  read_tsv() %>% 
+  mutate(Batch = str_extract(Forward, "202[0-9]_0[0-9]")) %>% 
+  select(Sample = file_name, Mouse_ID= internal_number, 
+         Treatment = drug_2, Day = days_after_treatment, 
+         Batch)  #"Streptomycin" 
+
+# Output dir
+figure_dir = file.path(base_dir, "Figures")
+tab_dir = file.path(base_dir, "Tables")
+tab_dir %>% 
+  dir.create(tab_dir)
+```
+
+
+# Filter tables 
+```{r}
+Treatment_levels = c("DMSO", "Chlorpromazine","Clotrimazole", "Terfenadine", "Zafirlukast")
+```
+
+# Phylum colors
+```{r}
+# Taxa colors
+Phylum_colors = c(`Collinsella aerofaciens` = "#9ba4ca", `Eggerthella lenta` = "#353e64",
+                  `Bacteroides fragilis` = "#e4f4cf", `Bacteroides thetaiotaomicron` = "#bfe590",
+                  `Bacteroides uniformis` = "#9bd651", `Phocaeicola vulgatus` = "#74ae29", 
+                  `Parabacteroides merdae` = "#4a6f1a", `Enterocloster bolteae` = "#FEE5D9",
+                  `Clostridium_P perfringens` = "#FCBBA1", `Erysipelatoclostridium ramosum` = "#FC9272",
+                  `Lacrimispora saccharolytica` = "#FB6A4A", `Bariatricus comes` = "#DE2D26", 
+                  `Dorea formicigenerans` = "#A50F15", `Agathobacter rectalis` = "#FEEDDE", 
+                  `Roseburia intestinalis` = "#FDD0A2", `Ruminococcus_B gnavus` = "#FDAE6B",
+                  `Streptococcus parasanguinis` = "#FD8D3C", `Streptococcus salivarius` = "#E6550D",
+                  `Veillonella parvula` = "#A63603", `Fusobacterium nucleatum` = "#8001b0", 
+                  `Escherichia coli` = "black")
+
+# Rename color vector
+names(Phylum_colors) = names(Phylum_colors) %>% 
+  str_replace(., "[a-z].* ", "\\. ")
+
+# Order taxa by phylum
+by_phylum = names(Phylum_colors)
+
+
+
+Treatment_colors =  c( "DMSO" = "#01a7c2",
+                       "Chlorpromazine" = "chartreuse4",
+                       "Clomifen" = "#ee7674",
+                       "Clotrimazole" = "#cbc5ea",
+                       "Terfenadine" = "#183642",
+                       "Zafirlukast" = "#73628a")
+
+# Order taxa by phylum
+by_treatment = names(Treatment_colors)
+```
+
+
+```{r}
+# Use the same samples for days zero and 6
+# Samples at day 6
+Gnoto_six_metadata = Gnoto_metadata %>% 
+  filter(Day == 6 & Treatment %in% Treatment_levels)
+
+# Samples at day 0
+Gnoto_zero_metadata = Gnoto_metadata %>% 
+  filter(Day == 0 & 
+           Treatment %in% Treatment_levels &
+           Mouse_ID %in% Gnoto_six_metadata$Mouse_ID)
+
+Gnoto_zs_metadata = bind_rows(Gnoto_zero_metadata, Gnoto_six_metadata) 
+
+
+Gnoto_zs_ASV = Gnoto_collapsed %>% 
+  filter(Sample %in% Gnoto_zs_metadata$Sample)
+
+
+# Rename taxa
+colnames(Gnoto_zs_ASV) = colnames(Gnoto_zs_ASV) %>% 
+  str_replace(., "[a-z].* ", "\\. ")
+```
+
+```{r}
+# Calculate prevalence of species in samples
+Gnoto_tax_prevalence = Gnoto_zs_ASV %>% 
+  pivot_longer(-Sample, names_to = "Taxon", values_to = "Counts") %>% 
+  mutate(Presence = Counts > 0) %>% 
+  group_by(Taxon) %>% 
+  count(Presence) %>% 
+  filter(Presence) %>% 
+  mutate(Prevalence = (n/nrow(Gnoto_zs_ASV))*100)
+
+# Retain species present in at least 10% of samples
+Gnoto_tax_retained = Gnoto_tax_prevalence %>% 
+  filter(Prevalence > 10)
+
+# Filter counts table
+Gnoto_zs_filt = Gnoto_zs_ASV %>% 
+  select(Sample, any_of(Gnoto_tax_retained$Taxon))
+
+# Obtain CLR transformation
+Gnoto_zs_clr = Gnoto_zs_filt %>% 
+  column_to_rownames("Sample") %>% 
+  zCompositions::cmultRepl(output = "p-counts", z.delete = FALSE) %>% 
+  decostand(method = "clr") %>% 
+  rownames_to_column("Sample")
+```
+
+```{r}
+# Split species table by species
+
+# Join clr and metadata tables
+# Long format
+Gnoto_zs_clr_long = left_join(Gnoto_zs_clr, Gnoto_zs_metadata,by = join_by(Sample)) %>% 
+  pivot_longer(-c(Sample, Mouse_ID, Treatment, Day, Batch), 
+               names_to = "Species", values_to = "clr")
+
+Gnoto_zs_clr_long %>% 
+  head()
+
+# Separate d0 and d6 into distinct columns
+Gnoto_zs_clr_wide = Gnoto_zs_clr_long %>% 
+  pivot_wider(id_cols = c(Mouse_ID, Treatment, Species, Batch), 
+              names_from = Day, 
+              values_from = clr, 
+              names_prefix = "clr_d") %>% 
+  arrange(Species, Treatment) %>% 
+  mutate(Treatment = factor(Treatment, 
+                            levels = c("DMSO", "Chlorpromazine",
+                                       "Clotrimazole", "Terfenadine",
+                                       "Zafirlukast")))
+
+Gnoto_zs_clr_wide %>% 
+  head()
+
+# Generate a data frame per species in all treatments
+# With two columns corresponding to the clr at days 0 and 6
+Gnoto_zs_clr_list = Gnoto_zs_clr_wide %>% 
+  group_split(Species)
+```
+
+# Differential abundance 
+See https://www.nicholas-ollberding.com/post/ancova-for-analyzing-pre-post-microbiome-studies/
+```{r}
+
+robust_lm <- function(my_df){
+  # Names of species for out table
+  Species = unique(my_df$Species)
+  
+  # Run lm
+  m <- lm(clr_d6 ~ clr_d0 + Treatment, data = my_df)
+  
+  # Perform coefficient test of robust regression
+  m_out = lmtest::coeftest(m, vcov. = sandwich::vcovHC(m))
+  
+  # Create output data frame
+  m_out_df = as.data.frame(m_out[,]) %>% 
+    rownames_to_column("Term") %>% 
+    mutate(Species = Species)
+  
+  colnames(m_out_df) = c("Term", "Estimate", "Std_error", 
+                         "t_value", "p_value", "Species")
+  
+  # Return
+  m_out_df
+}
+
+Gnoto_lm = map_df(Gnoto_zs_clr_list, function(df){
+  robust_lm(df)
+})
+
+
+# The estimate represents the change in clr-transformed abundance
+# Of each microbe on each treatment compared to the control after adjusting
+# for baseline abundance
+# Log2FoldChange is just a change of base of the estimate for plots
+Gnoto_lm_df = Gnoto_lm %>% 
+  filter(!(Term %in% c("clr_d0", "(Intercept)"))) %>% 
+  rename("Treatment" = "Term") %>% 
+  mutate(Treatment = str_remove(Treatment, "Treatment"),
+         log2FoldChange = log2(exp(Estimate)),
+         Species = str_replace(Species, "[a-z].* ", "\\. "),
+         Species = factor(Species, levels = by_phylum)) %>% 
+  arrange(Treatment, p_value) %>% 
+  group_by(Treatment) %>% 
+  mutate(p_adjusted = p.adjust(p_value, method = "BH")) %>% 
+  ungroup()
+
+```
+
+```{r}
+# Volcano plot of COM20 members in each community
+Gnoto_lm_volcano = Gnoto_lm_df %>% 
+  ggplot(aes(x = log2FoldChange, y = -log10(p_adjusted), fill = Species)) +
+  geom_hline(yintercept = 1, color = "darkgray", linetype = "dashed") +
+  geom_vline(xintercept = 0, color = "darkgray", linetype = "dashed") +
+  geom_point(size = 3, alpha = 0.85, pch = 21, color = "gray") +
+  scale_fill_manual(values = Phylum_colors) +
+  theme_light() +
+  facet_wrap(~Treatment, ncol = 2) +
+  labs(x = "Log2 fold-change (clr-transformed abundance)", y = "-log10(Adj. P)") +
+  theme(legend.text = element_text(face = "italic"))
+
+Gnoto_lm_volcano
+```
+
+
+```{r}
+# Export plots
+# ggpubr::ggexport(Gnoto_lm_volcano, 
+#                  filename = file.path(figure_dir, "Fig_7_Gnoto_lm_volcano.pdf"),height = 6, width = 7)
+```
+
+# Source data
+```{r}
+Source_ED10D = Gnoto_lm_df %>% 
+  select(Drug = Treatment, Species, Regression_coefficient = log2FoldChange, 
+         P_value = p_value, Adjusted_P = p_adjusted)
+
+# write_tsv(Source_ED10D, file.path(base_dir, "Tables/source_data/Source_ED10D.tsv"))
+
+```
+
+
+# Write tables 
+
+```{r}
+Gnoto_lm_export = Gnoto_lm_df %>%
+  mutate(significant = if_else(p_adjusted < 0.1, TRUE, FALSE)) %>% 
+  select(Species, Treatment, log2FoldChange, p_adjusted, significant) 
+
+# Gnoto_lm_export %>% 
+#   write_tsv(file = file.path(tab_dir, "Gnoto_diffabund.tsv"))
+```

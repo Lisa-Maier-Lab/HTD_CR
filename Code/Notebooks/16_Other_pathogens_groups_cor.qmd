@@ -1,0 +1,322 @@
+---
+title: "Table of treatment classification"
+format: html
+---
+
+Jacobo de la Cuesta-Zuluaga. June 2023.
+
+The aim of this script is to generate a clean version of the table
+of treatment category based on lumi confidence intervals for the paper.
+
+# Libraries
+
+```{r}
+library(tidyverse)
+library(rstatix)
+library(conflicted)
+```
+
+
+```{r}
+# Solve conflicts
+conflict_prefer("filter", "dplyr")
+```
+
+```{r}
+# Set seed
+set.seed(2112)
+```
+
+# Load data
+```{r}
+# Directories
+base_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper/"
+data_dir = file.path(base_dir, "Data/Taiyeb_data")
+tables_dir = file.path(base_dir, "Tables")
+figure_dir = file.path(base_dir, "Figures")
+```
+
+```{r}
+# Load data of vibrio and other pathogens
+Patho_noVibrio_OD_Lumi = file.path(base_dir, "Data/Drug_hits_patho_comm/Patho_noVibrio_OD_Lumi.csv") %>% 
+  read.csv() %>% 
+  select(Condition = drug, Pathogen = strain, Conc = concentration, Replicate = replicate, OD_norm = median_rel_OD,
+         signal_norm = rel_lumi) %>% 
+  filter(Condition != "DMSO")
+
+
+Vibrio_OD_Lumi = file.path(base_dir, "Data/Drug_hits_patho_comm/Vibrio_OD_Lumi.csv") %>% 
+  read.csv() %>% 
+    select(Condition = drug, Pathogen = strain, Conc = concentration, Replicate = replicate, OD_norm = median_rel_OD,
+         signal_norm = rel_CFU) %>% 
+  filter(Condition != "DMSO")
+
+# Combine
+Pathogens_OD_Lumi = bind_rows(Patho_noVibrio_OD_Lumi, Vibrio_OD_Lumi) %>% 
+  mutate(Treatment = str_c(Condition, Conc, sep = "_"))
+
+```
+
+```{r}
+# Drugs inhibiting Salmonella
+inhibitors = c("Trimethoprim", "Ofloxacin", "Nalidixic acid", "Oxolinic acid", 
+               "Avermectin B1", "Avermectin",
+               "Fluoxetine", "Lansoprazole")
+
+```
+
+
+# Identify treatments with increased lumi
+```{r}
+# Identify condition/conc combinations that have an increased luminescence
+# Since the number of replicates is low and the number of treatments is high
+# I will select treatments based on the confidence interval of the mean lumi
+# instead of doing a one-way t-test.
+
+# Filter treatments that result in a very low OD
+# Remove lower 10% of OD values
+Mean_OD = Pathogens_OD_Lumi %>% 
+  group_by(Treatment, Pathogen) %>% 
+  summarise(mean_OD = mean(OD_norm))
+
+
+OD_percentiles = quantile(Mean_OD$mean_OD, 
+                          na.rm = TRUE, 
+                          probs = c(0.1, 0.5, 0.9))
+
+Treatment_OD_filt = Mean_OD %>% 
+  filter(mean_OD > 0.21)
+```
+
+```{r}
+# Table of treatments excluded from analysis
+Pathogens_table_exluded = Pathogens_OD_Lumi %>% 
+  mutate(Excluded = case_when(Condition %in% inhibitors ~ "Salmonella inhibitor",
+                              !(Treatment %in% c(Treatment_OD_filt$Treatment, "Control"))  ~ "Low OD",
+                              TRUE ~ NA))
+
+
+Pathogens_table_exluded
+```
+
+```{r}
+# Calculate confidence intervals of the mean
+# Classify treatments depending on whether the confidence interval encompasses 
+# a set of threshold values
+Low_lumi_threshold = 0.5
+Up_lumi_threshold = 2
+
+
+# Confidence intervals of Lumi
+Combined_Lumi_CI = Pathogens_table_exluded %>% 
+  group_by(Treatment, Excluded, Pathogen) %>% 
+  get_summary_stats(type = "mean_ci") %>% 
+  filter(variable %in% c("signal_norm", "OD_norm")) %>% 
+  ungroup() %>% 
+  mutate(variable = str_replace(variable, "signal", "luminescence"),
+         Left_ci = mean - (ci/2),
+         Right_ci = mean + (ci/2)) %>%
+  separate_wider_delim(Treatment, delim = "_", names = c("Condition", "Concentration"), cols_remove = FALSE)
+
+# Check
+Combined_Lumi_CI %>% 
+  filter(!is.na(Excluded))
+```
+
+
+```{r}
+# Make wide table
+Pathogen_Lumi_CI = Combined_Lumi_CI %>% 
+  pivot_wider(id_cols = c(Pathogen, Condition, Concentration, Treatment, Excluded, n), 
+              names_from = variable, values_from = c(mean, ci, Left_ci, Right_ci)) %>% 
+  mutate(Colonization = case_when(Left_ci_luminescence_norm < Low_lumi_threshold & Right_ci_luminescence_norm < Low_lumi_threshold ~ "Pathogen-restricting",
+                                  Left_ci_luminescence_norm > Up_lumi_threshold & Right_ci_luminescence_norm > Up_lumi_threshold ~ "Pathogen-favoring",
+                                  TRUE ~ "No effect")) %>% 
+  select(Condition, Concentration, Pathogen, Excluded, Colonization, n, matches("luminescence"), matches("OD"), Treatment)
+```
+
+# Export table 
+```{r}
+# Pathogen_Lumi_CI %>%
+#   write_tsv(file.path(tables_dir, "Pathogen_Lumi_CI.tsv"))
+```
+
+
+# Plot
+```{r}
+Colonization_palette = c("Pathogen-favoring" = "#AF3800",
+                         "Pathogen-restricting" = "#379634",
+                         "No effect" = "#8B89A9",
+                         "Not meassured" = "gray95")
+
+#Transform table
+# Fix group levels
+Plot_lumi_df = Pathogen_Lumi_CI %>% 
+  filter(!(Condition %in% inhibitors)) %>% 
+  complete(Condition, Concentration) %>% 
+  mutate(Concentration = factor(Concentration, 
+                                levels = c("10", "20", "40", "80", "100")),
+         Colonization = factor(Colonization, 
+                               levels = c("Pathogen-favoring","Pathogen-restricting","No effect","Not meassured"))) %>% 
+  arrange(Condition, Concentration)
+
+Min_conc = Plot_lumi_df %>% 
+  mutate(Concentration = as.numeric(as.character(Concentration))) %>% 
+  arrange(Condition, Concentration) %>% 
+  filter(!is.na(mean_luminescence_norm)) %>% 
+  group_by(Condition) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  arrange(Concentration) %>% 
+  select(Condition, Concentration)
+
+Favoring_order = Plot_lumi_df %>%
+  count(Condition, Colonization, .drop = FALSE) %>%
+  pivot_wider(id_cols = Condition, names_from = Colonization, values_from = n) %>%
+  left_join(Min_conc, by = join_by(Condition)) %>%
+  arrange(-`Pathogen-favoring`, -Concentration, `Pathogen-restricting`)
+```
+
+```{r fig.height=7, fig.width=8}
+Treatment_figure = Plot_lumi_df %>% 
+  mutate(Condition = factor(Condition, levels = Favoring_order$Condition),
+         Pathogen = factor(Pathogen, 
+                           levels = c("E. coli", "K. pneumoniae", 
+                                      "S. flexneri",  "Y. enterocolitica", 
+                                      "Y. pseudotuberculosis", "V. cholerae")),
+         OD_shade = case_when(mean_OD_norm >= 0.75 ~ "High",
+                              mean_OD_norm < 0.75 ~ "Low",
+                              TRUE ~ "High"),
+         OD_shade = factor(OD_shade, levels = c("Low", "High"))) %>% 
+  ggplot(aes(x = Condition, y = Concentration,fill = Colonization, alpha = OD_shade)) +
+  geom_tile(color = "lightgray") +
+  geom_point(aes(shape = Excluded), show.legend=FALSE) +
+  scale_alpha_discrete(range = c(0.70, 1)) +
+  scale_fill_discrete(type = Colonization_palette) +
+  scale_shape_manual(values = c(4)) +
+  facet_wrap(~Pathogen, ncol = 2) +
+  theme_light() +
+  theme(panel.grid = element_blank()) +
+  labs(x = "Drug", y = "Concentration (uM)", fill = "Treatment group") +
+  coord_fixed() +
+  theme(axis.text.x = element_text(size = 8, angle = 90, hjust = 1),
+        axis.text.y = element_text(size = 8),
+        legend.position = "bottom", strip.text = element_text(face = "italic"))
+
+Treatment_figure
+```
+
+```{r}
+# ggpubr::ggexport(Treatment_figure,
+#                  filename = file.path(figure_dir, "Fig_5_Treatment_Groups_Pathogens.pdf"),
+#                  height = 7,
+#                  width = 8)
+```
+
+# Source data
+```{r}
+Source_ED5D = Plot_lumi_df %>% 
+  mutate(Condition = factor(Condition, levels = Favoring_order$Condition), 
+         OD_shade = case_when(mean_OD_norm >= 0.75 ~ "High",
+                              mean_OD_norm < 0.75 ~ "Low",
+                              TRUE ~ "High"),
+         OD_shade = factor(OD_shade, levels = c("Low", "High"))) %>% 
+  select(Drug = Condition, Concentration, Pathogen, Excluded, Colonization, mean_OD_norm)
+
+# write_tsv(Source_ED5D, file.path(base_dir, "Tables/source_data/Source_ED5D.tsv"))
+```
+
+
+# Correlation between pathogens
+```{r}
+# Pathogen df for correlationa analysis
+Plot_cor_df = Plot_lumi_df %>%
+  mutate(Treatment = str_remove(Treatment, " hydrochloride"),
+         Condition = str_remove(Condition, " hydrochloride")) %>% 
+  select(-Concentration) %>% 
+  arrange(Treatment)
+```
+
+```{r}
+# Load STm data
+Salmonella_Lumi_raw = file.path(tables_dir, "Salmonella_Lumi_OD_CI.tsv") %>% 
+  read_tsv()
+
+# Fix labels
+Salmonella_Lumi_filt = Salmonella_Lumi_raw %>% 
+  mutate(Condition = str_replace(Condition, "Tiratricole", "Tiratricol")) %>% 
+  select(-Concentration) %>% 
+  filter(Treatment %in% Plot_cor_df$Treatment)
+  
+```
+
+```{r}
+# Join tables
+Plot_cor_full_df = bind_rows(Plot_cor_df, Salmonella_Lumi_filt) %>% 
+  arrange(Treatment) %>% 
+  mutate(Excluded = if_else(Condition == "Clindamycin", NA, Excluded)) %>% 
+  filter(is.na(Excluded)) 
+
+Plot_cor_full_df %>% 
+  count(Condition)
+
+Plot_cor_full_df %>% 
+  count(Treatment)
+```
+
+
+```{r}
+# Calculate correlation matrix
+# Filter 100uM because no data in S. Tm
+Plot_cor_mat = Plot_cor_full_df %>% 
+  filter(!str_detect(Treatment, "_100")) %>% 
+  pivot_wider(id_cols = Treatment, 
+              names_from = Pathogen, 
+              values_from = mean_luminescence_norm) %>% 
+  select(-Treatment) %>% 
+  drop_na() %>% 
+  cor_mat(method = "spearman")
+
+Plot_cor_pval = Plot_cor_mat %>% 
+  cor_get_pval()
+```
+
+```{r}
+Plot_cor_mat %>% 
+  cor_plot(method = "color", 
+           type = "lower", 
+           palette = paletteer::paletteer_c("grDevices::Berlin", 100),
+           significant.level = 0.05)
+```
+
+
+```{r fig.height=7, fig.width=7}
+# pdf(file = file.path(figure_dir, "Pathogens_correlation_Clinda.pdf"), 
+#     width = 7, height = 7);
+# 
+# Plot_cor_mat %>% 
+#   cor_plot(method = "color", 
+#            type = "lower", 
+#            palette = paletteer::paletteer_c("grDevices::Berlin", 100),
+#            significant.level = 0.05);
+# 
+# dev.off()
+```
+
+# Source data
+```{r}
+Source_1E = Plot_cor_mat %>% 
+  pivot_longer(-rowname) %>% 
+  arrange(value) %>% 
+  rename("spp_1" = "rowname", "spp_2" = "name", "cor" = "value")
+
+# write_tsv(Source_1E, file.path(base_dir, "Tables/source_data/Source_1E.tsv"))
+```
+
+
+```{r}
+# ggpubr::ggexport(Plot_cor,
+#                  filename = file.path(figure_dir, "Pathogens_correlation.pdf"),
+#                  height = 7,
+#                  width = 7)
+```
