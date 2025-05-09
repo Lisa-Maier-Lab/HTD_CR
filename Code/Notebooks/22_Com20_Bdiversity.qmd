@@ -1,0 +1,352 @@
+---
+title: "In vitro Com20 beta-diversity"
+format: html
+---
+
+Jacobo de la Cuesta-Zuluaga. October 2023. 
+The aim of this notebook is to do an exploratory analysis of the beta diversity
+of in vitro Com20 samples
+
+
+# Libraries
+
+```{r}
+library(tidyverse)
+library(vegan)
+library(rstatix)
+library(ggpubr)
+library(conflicted)
+```
+
+```{r}
+# Solve conflicts
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(rstatix::get_summary_stats)
+```
+
+
+# Load tables 
+```{r}
+
+# Input dirs
+base_dir = "/mnt/volume_1/dm_main/projects/COM20_picrust/"
+prediction_dir = file.path(base_dir, "Pipeline_out")
+tables_dir = file.path(base_dir, "out_tables")
+
+# Tables and figures output
+out_tabs_dir = "/mnt/volume_1/dm_main/projects/Com_ecology/Tables/"
+figure_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper/Figures/"
+
+
+# Taxa abundance
+Com20_abund_raw = file.path(base_dir, "Data/COM20_abundance_original.tsv") %>% 
+  read_tsv()
+
+# Metadata
+metadata_table_raw = file.path(base_dir, "Data/COM20_metadata.tsv") %>% 
+  read_tsv()
+
+# Samples to remove
+remove_samples = metadata_table_raw %>% 
+  filter(Condition == "Comm") %>% 
+  pull(Sample)
+
+metadata_table = metadata_table_raw %>% 
+  filter(!(Sample %in% remove_samples)) %>% 
+  mutate(Treatment = str_c(Condition, Conc, sep = "_"))
+
+metadata_colonization = file.path(tables_dir, "Metadata_colonization.tsv") %>% 
+  read_tsv() %>% 
+  mutate(Colonization = case_when(Colonization == "Salmonella-favouring" ~ "S.Tm-favoring",
+                                  Colonization == "Salmonella-restricting" ~ "S.Tm-restricting",
+                                  TRUE ~ Colonization))
+
+Taxa_IDs = "/mnt/volume_1/dm_main/projects/Amplicon_Seq_References/COM20_GTDB_Taxonomy.txt" %>% 
+  read_tsv() %>% 
+  separate(GTDB_Taxonomy, into = LETTERS[1:7], sep = ";") %>% 
+  select(Taxon = ID, Species = G) %>% 
+  mutate(Species = str_remove(Species, "s__"), 
+         Species = str_replace(Species, "[a-z].* ", ". "))
+
+# Alpha diversity
+Com20_Adiv = read_tsv(file.path(out_tabs_dir, "Com20_Adiv.tsv"))
+```
+# Prepare tables
+
+```{r}
+# Metadata
+# Drugs inhibiting Salmonella
+inhibitors = c("Trimethoprim", "Ofloxacin", "Nalidixic acid", "Oxolinic acid", 
+               "Avermectin B1", "Avermectin")
+
+# Filter metadata
+# Retain controls
+metadata_table_filt = metadata_table %>% 
+  mutate(Treatment = if_else(Condition == "Control", "Control", Treatment),
+         Control = if_else(Condition == "Control", "Control", "Treatment"),
+         signal_norm = if_else(Condition == "Control", 1, signal_norm),
+         OD_norm = if_else(Condition == "Control", 1, OD_norm))
+```
+
+
+```{r}
+# Organize and filter taxa abundance table
+Com20_abund =  Com20_abund_raw %>% 
+  mutate(Sample = str_replace_all(Sample, "-", "_"), 
+         Sample = str_c("sm_", Sample)) %>% 
+  select(Sample, starts_with("NT"))
+
+
+Com20_abund_filt = Com20_abund %>% 
+  filter(Sample %in% metadata_table_filt$Sample)
+```
+
+# Rarefaction
+```{r}
+# Sequencing depth for rarefaction
+Depth = Com20_abund_filt %>% 
+  select(-Sample) %>% 
+  rowSums() %>% 
+  min()
+
+Com20_rare = Com20_abund_filt %>% 
+  column_to_rownames("Sample") %>% 
+  rrarefy(sample = Depth) %>% 
+  as.data.frame() %>% 
+  rownames_to_column("Sample")
+
+# Replace 0 in a compositionally aware manner
+Com20_nZero = Com20_abund_filt %>% 
+  column_to_rownames("Sample") %>% 
+  zCompositions::cmultRepl(output = "p-counts", z.delete = FALSE) %>% 
+  rownames_to_column("Sample")
+```
+
+
+# Bdiversity by colonization
+```{r}
+Colonization_bdiv_metadata = metadata_colonization %>% 
+  filter(!is.na(Colonization)) %>% 
+  mutate(signal_norm = if_else(Condition == "Control", 1, signal_norm),
+         OD_norm = if_else(Condition == "Control", 1, OD_norm))
+```
+
+# Calculate distances
+```{r}
+# Calculate the robust Bray distance
+# Use 1000 iterations of the rarefying step
+Colonization_Bray = Com20_rare %>% 
+  filter(Sample %in% Colonization_bdiv_metadata$Sample) %>% 
+  column_to_rownames("Sample") %>% 
+  avgdist(sample = Depth, 
+          iterations = 100,
+          dmethod = "bray", 
+          meanfun = median) 
+
+
+Colonization_Bray %>% 
+  class()
+```
+
+
+```{r}
+# PCoA based on Bray
+Colonization_Bray_PcoA_obj = cmdscale(Colonization_Bray, k = 4, eig = T, add = TRUE)
+
+
+# Data frame with PCo and sample data
+Colonization_Bray_PcoA = Colonization_Bray_PcoA_obj$points %>% 
+  as.data.frame() %>% 
+  rownames_to_column("Sample") %>% 
+  left_join(Colonization_bdiv_metadata, by = "Sample") %>% 
+  filter(!is.na(Colonization)) 
+
+Colonization_Bray_PcoA %>% 
+  head()
+
+# PCo proportion of variance
+Colonization_PC1 = round(Colonization_Bray_PcoA_obj$eig[1]/sum(Colonization_Bray_PcoA_obj$eig), 4)* 100
+Colonization_PC2 = round(Colonization_Bray_PcoA_obj$eig[2]/sum(Colonization_Bray_PcoA_obj$eig), 4)* 100
+Colonization_PC3 = round(Colonization_Bray_PcoA_obj$eig[3]/sum(Colonization_Bray_PcoA_obj$eig), 4)* 100
+Colonization_PC4 = round(Colonization_Bray_PcoA_obj$eig[4]/sum(Colonization_Bray_PcoA_obj$eig), 4)* 100
+```
+## Plots
+```{r}
+Colonization_colors =   c("Control" = "gray30", "No effect" = "#8b89a9", 
+                          "S.Tm-favoring" = "#af3800", "S.Tm-restricting" = "#379634")
+```
+
+
+```{r}
+OD_PCoA = Colonization_Bray_PcoA %>% 
+  arrange(Sample) %>% 
+  mutate(Colonization = fct_inorder(Colonization)) %>% 
+  ggplot(aes(x = V1, y = V2, color = Colonization, fill = (OD_norm))) +
+  geom_point(size = 3, alpha = 0.85, shape = 21, stroke = 1.1) +
+  scale_color_manual(values = Colonization_colors) +
+  scale_fill_gradient(low = "pink", high = "gray97", na.value = NA) +
+  # scale_fill_viridis_c(option = "inferno", begin = 0, end = 0.99, direction = 1) +
+  coord_fixed() +
+  theme_light() +
+  labs(x = str_glue("PCo1 ({pvar}%)", pvar = Colonization_PC1),
+       y = str_glue("PCo2 ({pvar}%)", pvar = Colonization_PC2))
+
+OD_PCoA
+
+```
+
+
+
+```{r}
+# ggpubr::ggexport(OD_PCoA, 
+#                  filename = file.path(figure_dir, "OD_PCoA.pdf"),
+#                  width = 5, height = 5)
+```
+
+
+# Source data
+```{r}
+Source_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper/Tables/source_data"
+
+Source_ED6C = OD_PCoA$data %>% 
+  select(Sample, PCo1 = V1, PCo2 = V2, Normalized_OD = OD_norm, Colonization, Treatment) %>% 
+  separate(Treatment, into = c("Drug", "Concentration"), sep = "_")
+
+
+# write_tsv(Source_ED6C, file.path(Source_dir, "Source_ED6C.tsv"))
+
+```
+
+# Biplot
+```{r}
+# See this
+# https://stackoverflow.com/questions/14711470/plotting-envfit-vectors-vegan-package-in-ggplot2
+# Also the last answer
+# Create data frame to generate biplot for envfit
+Com20_envfit_df = Com20_rare %>% 
+  filter(Sample %in% Colonization_bdiv_metadata$Sample) %>% 
+  column_to_rownames("Sample")
+
+# Make sure that the names match
+all(rownames(Colonization_Bray_PcoA_obj$points) == rownames(Com20_envfit_df))
+
+# run envfit
+Com20_envfit_obj = envfit(Colonization_Bray_PcoA_obj, Com20_envfit_df, perm = 9999)
+
+# Extract scores and add species names
+Com20_envfit_scores = scores(Com20_envfit_obj, display = "vectors") %>% 
+  as.data.frame() %>%
+  mutate(across(.cols = everything(), .fns = function(x) x * vegan:::ordiArrowMul(Com20_envfit_obj))) %>% # Remember to multiply by the scaling factor
+  rownames_to_column("Taxon") %>% 
+  left_join(Taxa_IDs)
+```
+
+```{r fig.height=5, fig.width=6}
+# Plot
+Colonization_biplot = Colonization_Bray_PcoA %>% 
+  ggplot(aes(x = V1, y = V2, color = Colonization)) +
+  geom_point(size = 2, alpha = 0.75) +
+  geom_segment(data= Com20_envfit_scores ,
+               aes(x = 0, xend = Dim1,y = 0, yend = Dim2),
+               arrow = arrow(length = unit(0.2, "cm")), 
+               color = "firebrick", 
+               alpha = 0.5) +
+  ggrepel::geom_text_repel(data = Com20_envfit_scores, 
+                           aes(x = Dim1, y = Dim2, label = Species), 
+                           size = 3, 
+                           color = "black",
+                           fontface = "italic")+
+  scale_color_manual(values = Colonization_colors) +
+  scale_fill_viridis_c(option = "inferno", begin = 0, end = 0.99) +
+  coord_fixed(xlim = c(-1.5, 1), ylim = c(-1, 1)) +
+  theme_light() +
+  labs(x = str_glue("PCo1 ({pvar}%)", pvar = Colonization_PC1),
+       y = str_glue("PCo2 ({pvar}%)", pvar = Colonization_PC2)) +
+  theme(legend.position = "bottom")
+
+Colonization_biplot
+```
+
+```{r}
+# ggpubr::ggexport(Colonization_biplot, 
+#                  filename = file.path(figure_dir, "Colonization_biplot.pdf"),
+#                  width = 5, height = 6)
+```
+
+# Source data
+```{r}
+Source_2C_PCoA = Colonization_Bray_PcoA %>% 
+  select(Sample, PCo1 = V1, PCo2 = V2, Colonization, Treatment)
+
+Source_2C_arrows = Com20_envfit_scores %>% 
+  select(NT_ID = Taxon, Species, Dim1, Dim2)
+
+# write_tsv(Source_2C_PCoA, file.path(Source_dir, "Source_2C_PCoA.tsv"))
+# write_tsv(Source_2C_arrows, file.path(Source_dir, "Source_2C_arrows.tsv"))
+
+```
+
+
+## PERMANOVA
+```{r}
+# Perform pairwise adonis manually
+# Compare each condition to control
+# Create a function to run a pairwise adonis adjusting of OD
+pairwise_adonis = function(dist_matrix, metadata, levels, perms = 9999){
+  
+  # Filter metadata table
+  metadata_pairwise = metadata %>% 
+    filter(Colonization %in% levels) %>% 
+    column_to_rownames("Sample")
+
+  
+  # Filter distance matrix
+  retain_samples = rownames(metadata_pairwise)
+  filtered_dist = as.dist(as.matrix(dist_matrix)[retain_samples,retain_samples])
+
+  # Run permanova and betadisper tests
+  adonis_out = vegan::adonis2(filtered_dist ~ OD_norm + Colonization,
+                              data = metadata_pairwise, 
+                              permutations = perms,
+                              by = "margin")
+  
+  betadisper_out = vegan::betadisper(filtered_dist, metadata_pairwise$Colonization)
+  betadisper_out = vegan::permutest(betadisper_out, permutations = perms)
+
+
+  # Create output table with P values and R2
+  adonis_colonization_R2 = adonis_out$R2[2]
+  adonis_OD_R2 = adonis_out$R2[1]
+  adonis_colonization_pval = adonis_out$`Pr(>F)`[2]
+  adonis_OD_pval = adonis_out$`Pr(>F)`[1]
+  betadisper_pval = betadisper_out$tab[1, "Pr(>F)"]
+  out_df = data.frame(Contrast = str_c(levels, collapse = "-"),
+                      adonis_colonization_R2, adonis_colonization_pval, 
+                      adonis_OD_R2, adonis_OD_pval,
+                      betadisper_pval)
+
+  # Return
+  out_df
+
+}
+```
+
+
+```{r}
+# List of contrasts to run
+Contrast_list = list(c("Control", "No effect"),
+                     c("Control", "S.Tm-favoring"),
+                     c("Control", "S.Tm-restricting"),
+                     c("No effect", "S.Tm-favoring"))
+
+# Execute pairwise permanova and betadisper
+Colonization_adonis_raw = map_df(Contrast_list, function(x){
+  pairwise_adonis(Colonization_Bray, Colonization_bdiv_metadata, 
+                  levels = x)})
+
+Colonization_adonis_raw %>% 
+  mutate(betadisper_padj = p.adjust(betadisper_pval, "BH"),
+         adonis_colonization_padj = p.adjust(adonis_colonization_pval, "BH"),
+         adonis_OD_padj = p.adjust(adonis_OD_pval, "BH")) %>% 
+  select(Contrast, matches("R2"), matches("padj")) 
+```

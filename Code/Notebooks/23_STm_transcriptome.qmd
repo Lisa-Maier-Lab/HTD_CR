@@ -1,0 +1,384 @@
+---
+title: "S. Tm transcriptomics"
+format: html
+---
+
+Jacobo de la Cuesta-Zuluaga. November 2024
+
+The aim of this notebook it to perform the differential abundance analysis
+of transcriptomics of S. Tm after treatment of Com20 with different compounds
+
+# Libraries
+```{r}
+library(tidyverse)
+library(ggridges)
+library(scales)
+library(DESeq2)
+library(clusterProfiler)
+library(data.table)
+library(conflicted)
+```
+
+
+```{r}
+# Solve conflicts
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::rename)
+conflicts_prefer(dplyr::count)
+conflicts_prefer(dplyr::slice)
+```
+
+```{r}
+# Set seed
+set.seed(2112)
+```
+
+
+# Load tables 
+```{r}
+# Directories
+base_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper"
+data_dir = file.path(base_dir, "Data/Metatranscriptomics")
+figure_dir = file.path(base_dir, "Figures")
+tables_dir = file.path(base_dir, "Tables")
+
+# Taxprofiler out
+STm_bracken_raw = file.path(data_dir, 
+                               "Salmonella/taxprofiler/bracken_B_standard_08gb_combined_reports.txt") %>% 
+  read_tsv()
+
+# Metadenovo output table
+Stm_metadenovo_raw = file.path(data_dir, 
+                               "Salmonella/summary_tables/user_assembly.prodigal.counts.tsv.gz") %>% 
+  read_tsv()
+
+# Metadata
+Stm_metadata = file.path(data_dir,"Samples.xlsx") %>% 
+  readxl::read_xlsx(.name_repair = "universal") %>% 
+  rename("Sample" = "Sample.name") %>% 
+  filter(Bacteria == "Salmonella") %>% 
+  select(-Bacteria)
+
+# Gene annotation
+STm_eggnog_raw = file.path(data_dir, 
+                          "Salmonella/summary_tables/user_assembly.prodigal.emapper.tsv.gz") %>% 
+  read_tsv()
+
+STm_ko_raw = file.path(data_dir, 
+                          "Salmonella/summary_tables/user_assembly.prodigal.kofamscan.tsv.gz") %>% 
+  read_tsv()
+
+```
+
+# Prepare tables
+```{r}
+# Clean Annotations
+# Select one eggNOG if multiple available
+# Pick only bacteria
+# eggnog_all = str_extract_all(eggnog_ogs, "([^,]+)\\|Bacteria")
+STm_eggnog = STm_eggnog_raw %>% 
+  mutate(eggnog_single =  str_extract(eggnog_ogs, "([^,]+)\\|Bacteria"),
+         eggnog_single = str_remove(eggnog_single, fixed("@2|Bacteria"))) %>% 
+  select(orf, eggnog_single, cog_category, description, preferred_name, 
+         ec, kegg_ko, kegg_module, kegg_reaction)
+
+STm_ko = STm_ko_raw %>% 
+  filter(score > thrshld) %>% 
+  group_by(orf) %>% 
+  arrange(desc(score)) %>% 
+  slice(1) %>% 
+  select(orf, ko, ko_definition)
+```
+
+```{r}
+# Add metadata to counts table
+Stm_metadenovo = Stm_metadenovo_raw %>% 
+  select(Sample = sample, Gene = orf, Count = count) %>% 
+  left_join(Stm_metadata, by = join_by(Sample))
+
+
+Stm_metadenovo_wide = Stm_metadenovo %>% 
+  arrange(Treatment, Sample) %>% 
+  pivot_wider(id_cols = c(Gene),
+              names_from = Sample,
+              values_from = Count, 
+              values_fill = 0)
+```
+
+```{r}
+# Mean TPM per gene taxon per treatment
+STm_mean_tpm = Stm_metadenovo_raw %>%
+  left_join(Stm_metadata, by = join_by(sample == Sample)) %>% 
+  group_by(orf,Treatment) %>%
+  summarize(mean_tpm = mean(tpm)) %>% 
+  ungroup()
+
+```
+
+
+```{r}
+STm_ridgeplot = STm_mean_tpm %>% 
+  mutate(Treatment = factor(Treatment, levels = c("mGAM", "DMSO",
+                                                   "Floxuridine", "Simvastatin",
+                                                  "Terfenadine","Clomiphene"))) %>% 
+  ggplot(aes(x = mean_tpm, y = Treatment)) +
+  geom_density_ridges(quantile_lines = TRUE, quantiles = 4, 
+                      alpha = 0.7, vline_colour = "gray25") +
+  scale_x_continuous(trans = "log10", 
+                     limits = c(1e-1, 1e4),
+                     expand = c(0.015,0),
+                     breaks = 10^(-1:4),
+                     labels = trans_format("log10", math_format(10^.x))) +
+  theme_light() +
+  labs(x = "Mean TPM", y = "Treatment")
+
+STm_ridgeplot
+```
+
+```{r}
+# Export
+# ggpubr::ggexport(STm_ridgeplot,
+#          filename = file.path(figure_dir, "STm_ridgeplot.pdf"),
+#          height = 6,
+#          width = 8)
+```
+
+
+# Run DESeq2 on Salmonella table
+## Format tables
+```{r}
+# Table for DESeq2
+Stm_metadenovo_counts = Stm_metadenovo_wide %>% 
+  column_to_rownames("Gene")
+
+# Metadata table
+Stm_metadata_counts = Stm_metadata %>% 
+  arrange(Treatment, Sample) %>% 
+  select(Sample, Treatment, Replicate) %>% 
+  distinct() %>% 
+  mutate(Treatment = factor(Treatment),
+         Treatment = relevel(Treatment, ref = "DMSO")) %>%
+  column_to_rownames("Sample")
+```
+
+```{r}
+# Make sure the order of samples is the same in counts and metadata tables
+Check_order = all(rownames(Stm_metadata_counts) == colnames(Stm_metadenovo_counts))
+
+if(Check_order == FALSE){
+    stop("Order of metadata rows and counts columns is not the same")
+  } 
+```
+
+## Execute DESeq
+```{r}
+# Create DESeq2 object
+DDS_object = DESeqDataSetFromMatrix(countData = Stm_metadenovo_counts,
+                                    colData = Stm_metadata_counts,
+                                    design = ~ Treatment)
+
+# Filter low count genes
+Retained_genes = rowSums(counts(DDS_object) >= 5) >= 3 
+DDS_object = DDS_object[Retained_genes,]
+
+# Execute DESeq2
+DDS_DESeq = DESeq(DDS_object)
+
+# Contrasts
+resultsNames(DDS_DESeq)
+```
+
+
+```{r}
+# Create a function to extract the results of DESeq and execute shrinkage
+Results_DESeq2 = function(DESeq_obj, Contrast, alpha = 0.1, lfcThreshold = 0.585){
+  
+  
+  # Extract results
+  DDS_result = results(DESeq_obj,
+                       name = Contrast,
+                       lfcThreshold = lfcThreshold,
+                       alpha = alpha,
+                       pAdjustMethod = "BH")
+
+  # Shrink log fold changes association with condition
+  DDS_Shrink = lfcShrink(DESeq_obj, 
+                         coef = Contrast, 
+                         lfcThreshold = lfcThreshold,
+                         type="apeglm",
+                         quiet = TRUE, 
+                         svalue = TRUE)
+                         
+  # Return
+  list("DDS_result" = DDS_result, 
+       "DDS_Shrink" = DDS_Shrink)
+}
+```
+
+
+```{r}
+# List of results by contrast
+# Remove "Intercept"
+STm_DDS_list = resultsNames(DDS_DESeq)[-1] %>% 
+  set_names() %>% 
+  map(function(contrast_name){
+    Results_DESeq2(DDS_DESeq, contrast_name, lfcThreshold = 0.585, alpha = 0.05)
+  })
+```
+
+```{r}
+# Summary of results on each treatment
+iwalk(STm_DDS_list, function(obj, name){
+  print(name)
+  summary(obj$DDS_result)
+  summary(obj$DDS_Shrink)
+})
+```
+
+## RNAseq PCA
+```{r}
+Treatment_colors = c("DMSO" = "#231D4BFF", "mGAM" = "#60BCE9FF", 
+                     "Terfenadine" = "#B5CF6BFF", "Clomiphene" = "#F57634FF", 
+                     "Floxuridine" = "#D6616BFF",  "Simvastatin" = "#A55194FF")
+```
+
+
+
+```{r}
+# Perform variance stabilizing transformation
+DDS_vsd = DDS_object %>% 
+  vst(blind=FALSE)
+
+# Plot PCA and customize
+DDS_PCA = DDS_vsd %>% 
+  plotPCA(intgroup = "Treatment") +
+  scale_color_manual(values = Treatment_colors) +
+  theme_light()
+
+DDS_PCA
+```
+```{r}
+# Export
+# ggpubr::ggexport(DDS_PCA,
+#          filename = file.path(figure_dir, "STm_Transcriptome_PCA.pdf"),
+#          height = 7,
+#          width = 7)
+```
+
+# Combined KEGG overrepresentation analysis
+```{r}
+Treatment_levels = levels = c("mGAM", "Terfenadine",  "Clomiphene",
+                              "Floxuridine", "Simvastatin")
+
+STm_KEGG_df = STm_DDS_list %>%  
+  imap(function(DESeq_obj, treat_name){
+    df_list = as.data.frame(DESeq_obj$DDS_Shrink) %>% 
+      mutate(Treatment = treat_name,
+               Treatment = str_remove(Treatment, "Treatment_"),
+               Treatment = str_remove(Treatment, "_vs_.*")) %>% 
+      rownames_to_column("orf")
+    }) %>% 
+  list_rbind() %>% 
+  left_join(STm_eggnog)
+
+
+STm_KEGG_filt = STm_KEGG_df %>% 
+  filter(svalue < 0.01, abs(log2FoldChange) > 0.585) %>% 
+  mutate(kegg_ko = str_remove_all(kegg_ko, fixed("ko:")),
+         Regulation = if_else(log2FoldChange > 0.585, "Upregulated", "Downregulated"),
+         Treatment = factor(Treatment, levels = Treatment_levels)) %>%
+  filter(kegg_ko != "-") %>% 
+  mutate(kegg_ko = strsplit(kegg_ko, ",")) %>%
+  unnest(kegg_ko)
+```
+
+```{r}
+# Execute overrepresentation analysis
+KEGG_pathway_ORA = compareCluster(kegg_ko ~ Treatment + Regulation, 
+                                  data = STm_KEGG_filt,
+                                  fun="enrichKEGG",
+                                  organism = "ko",
+                                  keyType = "kegg",
+                                  pvalueCutoff = 0.1,
+                                  pAdjustMethod = "BH",
+                                  minGSSize = 5) 
+```
+
+```{r}
+KEGG_annot = KEGG_pathway_ORA %>% 
+  as.data.frame() %>% 
+  select(ID, category, subcategory, Description) %>% 
+  distinct()
+```
+
+
+```{r fig.width=12, fig.height=12}
+Category_levels = c("Metabolism", "Cellular Processes", "Human Diseases", 
+                    "Genetic Information Processing", "Environmental Information Processing")
+
+
+# labeller = labeller(facet = label_wrap_gen(20))
+KEGG_pathway_plot = KEGG_pathway_ORA %>% 
+  dotplot(x = "Regulation") +
+  paletteer::scale_fill_paletteer_c("grDevices::TealGrn") +
+  # facet_grid(category~Treatment) +
+  facet_grid(factor(category, levels = Category_levels) ~ factor(Treatment, levels=Treatment_levels), 
+             space = "free", scales = "free") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "bottom")
+
+KEGG_pathway_plot
+```
+
+
+```{r}
+# Export
+# ggpubr::ggexport(KEGG_pathway_plot,
+#          filename = file.path(figure_dir, "STm_pathway_ORA.pdf"),
+#          height = 12,
+#          width = 12)
+```
+
+# Source data
+```{r}
+Source_ED8A = KEGG_pathway_plot$data %>% 
+  mutate(Treatment = str_replace(Treatment, "mGAM", "S. Tm only")) %>% 
+  select(ID, Treatment, Regulation, category, subcategory, 
+         Description, GeneRatio, pvalue, p.adjust)
+rownames(Source_ED8A) = NULL
+
+# write_tsv(Source_ED8A, file.path(base_dir, "Tables/source_data/Source_ED8A.tsv"))
+```
+
+```{r}
+Source_2E = STm_ridgeplot$data %>% 
+  pivot_wider(id_cols = orf, values_from = mean_tpm, names_from = Treatment)
+
+# write_tsv(Source_2E, file.path(base_dir, "Tables/source_data/Source_2E.tsv"))
+```
+
+
+```{r}
+Source_2F = DDS_PCA$data %>% 
+  select(Sample = name, PC1, PC2, Treatment)
+rownames(Source_2F) = NULL
+
+# write_tsv(Source_2F, file.path(base_dir, "Tables/source_data/Source_2F.tsv"))
+```
+
+
+# Export table
+```{r}
+Stm_metadenovo_export = Stm_metadenovo_raw %>% 
+  select(Sample = sample, Gene = orf, Count = count, TPM = tpm) %>% 
+  left_join(Stm_metadata, by = join_by(Sample)) %>% 
+  left_join(STm_eggnog, by = join_by("Gene" == "orf")) %>% 
+  left_join(STm_ko, by = join_by("Gene" == "orf"))
+
+
+KEGG_ORA_export = KEGG_pathway_ORA %>% 
+  as.data.frame() %>% 
+  relocate(ID)
+
+# KEGG_ORA_export %>% 
+#   write_tsv(file.path(tables_dir, "STm_KEGG_ORA_export.tsv"))
+```

@@ -1,0 +1,231 @@
+---
+title: "Alpha diversity and S.Tm"
+format: html
+---
+Jacobo de la Cuesta-Zuluaga. November 2024. 
+The aim of this notebook is to do an exploratory analysis of the alpha diversity
+of in vitro Com20 samples
+
+
+# Libraries
+
+```{r}
+library(tidyverse)
+library(vegan)
+library(rstatix)
+library(ggpubr)
+library(conflicted)
+```
+
+```{r}
+# Solve conflicts
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(rstatix::get_summary_stats)
+```
+
+```{r}
+set.seed(2112)
+```
+
+
+# Load tables 
+
+
+```{r}
+# Input dirs
+base_dir = "/mnt/volume_1/dm_main/projects/COM20_picrust/"
+prediction_dir = file.path(base_dir, "Pipeline_out")
+tables_dir = file.path(base_dir, "out_tables")
+
+# Tables and figures output
+out_tabs_dir = "/mnt/volume_1/dm_main/projects/Com_ecology/Tables/"
+dir.create(out_tabs_dir)
+figure_dir = "/mnt/volume_1/dm_main/projects/Com_ecology/Figures/"
+dir.create(figure_dir)
+
+# Taxa abundance
+Com20_abund_raw = file.path(base_dir, "Data/COM20_abundance_original.tsv") %>% 
+  read_tsv()
+
+# Metadata
+metadata_table_raw = file.path(base_dir, "Data/COM20_metadata.tsv") %>% 
+  read_tsv()
+
+# Samples to remove
+remove_samples = metadata_table_raw %>% 
+  filter(Condition == "Comm") %>% 
+  pull(Sample)
+
+metadata_colonization = file.path(tables_dir, "Metadata_colonization.tsv") %>% 
+  read_tsv() %>% 
+  mutate(Colonization = case_when(Colonization == "Salmonella-favouring" ~ "S.Tm-favoring",
+                                  Colonization == "Salmonella-restricting" ~ "S.Tm-restricting",
+                                  TRUE ~ Colonization))
+
+
+metadata_table = metadata_table_raw %>% 
+  filter(!(Sample %in% remove_samples)) %>% 
+  mutate(Treatment = str_c(Condition, Conc, sep = "_")) %>% 
+  left_join(metadata_colonization)
+
+Taxa_IDs = "/mnt/volume_1/dm_main/projects/Amplicon_Seq_References/COM20_GTDB_Taxonomy.txt" %>% 
+  read_tsv() %>% 
+  separate(GTDB_Taxonomy, into = LETTERS[1:7], sep = ";") %>% 
+  select(Taxon = ID, Species = G) %>% 
+  mutate(Species = str_remove(Species, "s__"), 
+         Species = str_replace(Species, "[a-z].* ", ". "))
+```
+
+# Prepare tables
+
+```{r}
+# Metadata
+# Drugs inhibiting Salmonella
+inhibitors = inhibitors = c("Trimethoprim", "Ofloxacin", "Nalidixic acid", "Oxolinic acid",
+               "Avermectin B1", "Avermectin")
+
+# Filter metadata
+# Retain controls
+metadata_table_filt = metadata_table %>% 
+  mutate(Treatment = if_else(Condition == "Control", "Control", Treatment)) %>% 
+  filter(!Condition %in% inhibitors,
+         (!is.na(Colonization) | Treatment == "Control"))
+
+Treatment_colonization_df = metadata_table_filt %>% 
+  select(Treatment, Colonization) %>% 
+  filter(!is.na(Colonization)) %>% 
+  distinct()
+
+
+```
+
+```{r}
+# Organize and filter taxa abundance table
+Com20_abund =  Com20_abund_raw %>% 
+  mutate(Sample = str_replace_all(Sample, "-", "_"), 
+         Sample = str_c("sm_", Sample)) %>% 
+  select(Sample, starts_with("NT"))
+
+
+Com20_abund_filt = Com20_abund %>% 
+  filter(Sample %in% metadata_table_filt$Sample)
+```
+
+# Rarefaction and relabund
+```{r}
+# Sequencing depth for rarefaction
+Depth = Com20_abund_filt %>% 
+  select(-Sample) %>% 
+  rowSums() %>% 
+  min()
+
+Com20_rare = Com20_abund_filt %>% 
+  column_to_rownames("Sample") %>% 
+  rrarefy(sample = Depth) %>% 
+  as.data.frame() %>% 
+  rownames_to_column("Sample")
+
+Com20_relabund = Com20_abund_filt %>% 
+  column_to_rownames("Sample") %>% 
+  decostand(MARGIN = 1, method = "total") %>% 
+  rownames_to_column("Sample")
+```
+
+
+# Alpha diversity
+```{r}
+# Obtain alpha diversity indices
+Rich_df = Com20_rare %>% 
+  select(-Sample) %>% 
+  specnumber() %>% 
+  data.frame(Sample = Com20_abund_filt$Sample, 
+             Richness = .)
+
+Shannon_df = Com20_rare %>% 
+  select(-Sample) %>% 
+  diversity(index = "shannon") %>% 
+  data.frame(Sample = Com20_abund_filt$Sample, 
+             Shannon = .)
+
+# Combined table
+Com20_Adiv = full_join(Rich_df, Shannon_df, by = join_by(Sample)) %>% 
+  left_join(metadata_table_filt, by = join_by(Sample)) %>% 
+  mutate(Control = if_else(Condition == "Control", "Control", "Treatment"))
+```
+
+```{r}
+# Mean alpha by treatment
+Com20_Adiv_summary_tmp = Com20_Adiv %>% 
+  group_by(Treatment) %>% 
+  summarise(Richness_mean = mean(Richness),
+            Richness_sd = sd(Richness),
+            Shannon_mean = mean(Shannon),
+            Shannon_sd = sd(Shannon)) %>% 
+  arrange(Shannon_mean)
+
+
+# Add OD
+Com20_Adiv_summary = metadata_table_filt %>% 
+  group_by(Treatment) %>% 
+  summarise(OD_mean = mean(OD_norm), OD_sd = sd(OD_norm),
+            signal_mean = mean(signal_norm), signal_sd = sd(signal_norm)) %>% 
+  full_join(Com20_Adiv_summary_tmp) %>% 
+  arrange(Shannon_mean) %>% 
+  mutate(Treatment = fct_inorder(Treatment))
+```
+
+
+```{r}
+Control_mean_Shannon = Com20_Adiv_summary %>% 
+  filter(Treatment == "Control") %>% 
+  pull(Shannon_mean)
+```
+
+## Correlation between OD, Lumi and alpha diversity
+```{r}
+# Calculate correlation coefficients
+Com20_Adiv %>% 
+  filter(!is.na(OD_norm)) %>%
+  cor_test(vars = c(OD_norm,signal_norm,Shannon,  Richness), 
+           method = "spearman") %>% 
+  adjust_pvalue()
+
+```
+
+# Alpha-diversity and S. Tm growth
+```{r}
+Shannon_lumi_lm = lm(signal_mean ~ OD_mean, data = Colonization_adiv_df) 
+
+Colonization_residual_df = Colonization_adiv_df %>% 
+  mutate(signal_od_residuals = Shannon_lumi_lm$residuals)
+```
+
+```{r}
+lm(signal_mean ~ OD_mean, data = Colonization_adiv_df) %>% 
+  broom::glance() %>% 
+  select(adj.r.squared, p.value, AIC)
+
+lm(signal_mean ~ OD_mean + Richness_mean, data = Colonization_adiv_df) %>% 
+  broom::glance() %>% 
+  select(adj.r.squared, p.value, AIC)
+
+lm(signal_mean ~ OD_mean + Shannon_mean, data = Colonization_adiv_df) %>% 
+  broom::glance() %>% 
+  select(adj.r.squared, p.value, AIC)
+
+lm(signal_mean ~ Richness_mean, data = Colonization_adiv_df) %>% 
+  broom::glance() %>% 
+  select(adj.r.squared, p.value, AIC)
+
+lm(signal_mean ~ Shannon_mean, data = Colonization_adiv_df) %>% 
+  broom::glance() %>% 
+  select(adj.r.squared, p.value, AIC)
+```
+
+```{r}
+Colonization_residual_df %>% 
+  rstatix::cor_test(signal_od_residuals, Shannon_mean, method = "spearman")
+
+Colonization_residual_df %>% 
+  rstatix::cor_test(signal_od_residuals, Richness_mean, method = "spearman")
+```

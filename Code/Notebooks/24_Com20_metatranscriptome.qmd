@@ -1,0 +1,380 @@
+---
+title: "22b_Metatranscriptome_Com20"
+format: html
+---
+
+Jacobo de la Cuesta-Zuluaga. November 2024
+
+The aim of this notebook it to perform the differential abundance analysis
+of transcriptomics of Com20 after treatment with different compounds
+
+# Libraries
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(scales)
+library(ggridges)
+library(DESeq2)
+library(clusterProfiler)
+library(data.table)
+library(conflicted)
+```
+
+
+```{r}
+# Solve conflicts
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::rename)
+conflicts_prefer(dplyr::count)
+conflicts_prefer(dplyr::slice)
+```
+
+```{r}
+# Set seed
+set.seed(2112)
+```
+
+
+# Load tables 
+```{r}
+# Directories
+base_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper/"
+data_dir = file.path(base_dir, "Data/Metatranscriptomics")
+figure_dir = file.path(base_dir, "Figures")
+tables_dir = file.path(base_dir, "Tables")
+
+genomes_dir = file.path(data_dir, "Com20_genomes")
+
+# Taxprofiler out
+Com20_bracken_raw = file.path(data_dir, 
+                               "Com20/taxprofiler/bracken_B_standard_08gb_combined_reports.txt") %>% 
+  read_tsv()
+
+# Metadenovo output table
+Com20_metadenovo_raw = file.path(data_dir, 
+                               "Com20/summary_tables/user_assembly.prodigal.counts.tsv.gz") %>% 
+  read_tsv()
+
+# Metadata
+Com20_metadata = file.path(data_dir,"Samples.xlsx") %>% 
+  readxl::read_xlsx(.name_repair = "universal") %>% 
+  rename("Sample" = "Sample.name") %>% 
+  filter(Bacteria == "Com20") %>% 
+  select(-Bacteria)
+
+# Gene annotation
+Com20_eggnog_raw = file.path(data_dir, 
+                          "Com20/summary_tables/user_assembly.prodigal.emapper.tsv.gz") %>% 
+  read_tsv()
+
+Com20_ko_raw = file.path(data_dir, 
+                          "Com20/summary_tables/user_assembly.prodigal.kofamscan.tsv.gz") %>% 
+  read_tsv()
+
+
+Taxa_IDs = "/mnt/volume_1/dm_main/projects/Amplicon_Seq_References/COM20_GTDB_Taxonomy.txt" %>% 
+  read_tsv() %>% 
+  separate(GTDB_Taxonomy, into = LETTERS[1:7], sep = ";") %>% 
+  select(NT_ID = ID, Species = G) %>% 
+  mutate(Species = str_remove(Species, "s__"), 
+         Species = str_replace(Species, "[a-z].* ", ". "))
+
+```
+
+```{r}
+# Prepare eggNOG table
+Com20_eggnog = Com20_eggnog_raw %>% 
+  mutate(eggnog_single =  str_extract(eggnog_ogs, "([^,]+)\\|Bacteria"),
+         eggnog_single = str_remove(eggnog_single, fixed("@2|Bacteria"))) %>% 
+  select(orf, eggnog_single, cog_category, description, preferred_name, 
+         ec, kegg_ko, kegg_module, kegg_reaction)
+```
+
+
+```{r}
+# Markers of bacterial stress
+# From https://doi.org/10.1038/s41467-021-23588-w
+Avican_SR_raw = file.path(base_dir, "Data/Public_data/Avican_2021_S3.xlsx") %>% 
+  readxl::read_excel(skip = 1, na = "nan")
+
+colnames(Avican_SR_raw) = str_replace_all(colnames(Avican_SR_raw), " ", "_")
+```
+
+
+# Contig labels
+```{r}
+# Identify the genome to which each contig belongs
+Genome_paths =  genomes_dir %>%
+  list.files(full.names = "TRUE") %>% 
+  str_subset("NT")
+
+Contigs_genomes_raw = Genome_paths %>% 
+  map(function(x){
+    # Spp NT ID
+    NT_ID = basename(x) %>% 
+      str_remove(".fasta")
+    
+    # Contig headers
+    Header = x %>% 
+      read_lines() %>% 
+      str_subset(">") %>% 
+      str_remove(">")
+    
+    data.frame(NT_ID, Header) 
+  }) %>% 
+  list_rbind()
+
+# Clean headers
+Contigs_genomes = Contigs_genomes_raw %>% 
+  mutate(Header =  word(Header, 1))
+```
+
+```{r}
+# Add NT ID to each gene based on contig ID
+Com20_metadenovo_contig = Com20_metadenovo_raw %>% 
+  left_join(Contigs_genomes, by = join_by("chr" == "Header")) 
+```
+
+
+# Metatranscriptome
+## Distributions
+```{r}
+# Mean TPM per gene taxon per treatment
+Com20_median_tpm = Com20_metadenovo_contig %>%
+  left_join(Taxa_IDs) %>% 
+  left_join(Com20_metadata, by = join_by(sample == Sample)) %>%
+  group_by(orf, NT_ID, Species, Treatment) %>%
+  summarize(median_tpm = mean(tpm)) %>% 
+  ungroup()
+
+
+# Order by median TPM in controls
+Taxon_order = Com20_median_tpm %>% 
+  filter(Treatment == "DMSO") %>% 
+  group_by(Species) %>% 
+  summarize(median_median_tpm = median(median_tpm),
+            p75_median_tpm = quantile(median_tpm, 0.75)) %>% 
+  arrange(p75_median_tpm) %>% 
+  pull(Species)
+```
+
+```{r fig.width=8, fig.height=8}
+Com20_tpm_plot = Com20_median_tpm %>% 
+  mutate(NT_ID = factor(Species, levels= Taxon_order)) %>%
+  ggplot(aes(x = median_tpm, y = NT_ID)) +
+  geom_density_ridges(quantile_lines = TRUE, quantiles = 4, alpha = 0.7, 
+                      vline_colour = "gray25") +
+  scale_x_continuous(trans = "log10", 
+                     limits = c(1e-3, 1e4),
+                     # breaks = trans_breaks("log10", function(x) 10^x, n = 6),
+                     breaks = 10^(-3:4),
+                     labels = trans_format("log10", math_format(10^.x))) +
+  facet_wrap(~Treatment) +
+  theme_light() +
+  # geom_vline(xintercept = 0.5, linetype = "dashed") +
+  labs(x = "TPM", y = "Taxon")
+
+Com20_tpm_plot
+```
+
+
+```{r}
+# # Export
+# ggpubr::ggexport(Com20_tpm_plot,
+#          filename = file.path(figure_dir, "Com20_tpm_plot.pdf"),
+#          height = 7,
+#          width = 8)
+```
+
+
+```{r}
+Median_tpm = Com20_median_tpm %>% 
+  group_by(Species, Treatment) %>% 
+  summarize(median_tpm = median(median_tpm)) %>% 
+  pivot_wider(id_cols = Species, names_from = Treatment, values_from = median_tpm) %>% 
+  mutate(d_Floxuridine = Floxuridine - DMSO,
+         d_Simvastatin = Simvastatin - DMSO) %>% 
+  arrange(-DMSO)
+
+Median_tpm
+```
+
+
+```{r}
+Filter_percentile = 0.80
+# Number of taxa per treatment with top 20% genes below 0.5 TPM
+Com20_median_tpm %>% 
+  group_by(Species, NT_ID, Treatment) %>% 
+  summarize(p80_tpm = quantile(median_tpm, Filter_percentile)) %>% 
+  group_by(Treatment) %>%
+  count(low_expression = p80_tpm < 0.5)
+
+Low_expression_taxa = Com20_median_tpm %>% 
+  group_by(Species, NT_ID, Treatment) %>% 
+  summarize(p80_tpm = quantile(median_tpm, Filter_percentile)) %>% 
+  mutate(Low_expression = if_else(p80_tpm < 0.5, "Low", "not_Low"))
+
+Low_expression_wide = Low_expression_taxa %>% 
+  group_by(Species, NT_ID, Treatment) %>% 
+  count(Low_expression) %>% 
+  pivot_wider(names_from = Treatment, values_from = Low_expression) %>% 
+  select(-n) %>% 
+  arrange(DMSO, NT_ID)
+```
+
+# Overrepresentation analysis of top expressed genes
+```{r}
+# Top expressed genes w. KEGG ID
+Top20_KEGG = Com20_median_tpm %>% 
+  group_by(Species, NT_ID, Treatment) %>% 
+  filter(median_tpm > quantile(median_tpm, 0.80)) %>% 
+  ungroup() %>% 
+  left_join(Com20_eggnog, by = join_by(orf))
+
+# Create table of KEGG annot of DEGs 
+DEG_KEGG_df = Top20_KEGG %>%
+  mutate(Species = str_replace(Species, fixed(". "),  "_")) %>% 
+  # filter(NT_ID == "NT5026") %>% 
+  select(orf, kegg_ko, Treatment, NT_ID, Species) %>%
+  mutate(kegg_ko = str_remove_all(kegg_ko, fixed("ko:"))) %>%
+  filter(kegg_ko != "-") %>% 
+  mutate(kegg_ko = strsplit(kegg_ko, ",")) %>%
+  unnest(kegg_ko) 
+```
+
+# Compare markers of stress
+```{r}
+# Select universal markers of stress
+Stress_response_genes = Avican_SR_raw %>% 
+  select(-Number_of_genes) %>% 
+  pivot_longer(- KEGG_Orthology_gene_groups, names_to = "Stress", values_to = "value") %>% 
+  filter(value >= 0.25) %>% 
+  count(KEGG_Orthology_gene_groups) %>% 
+  filter(n >= 6)
+```
+
+```{r}
+# Filter top20 table to universal stress markers
+DEG_Stress_filt = DEG_KEGG_df %>% 
+  filter(Treatment != "DMSO", 
+         kegg_ko %in% Stress_response_genes$KEGG_Orthology_gene_groups) %>% 
+  left_join(Com20_ko_raw, by = join_by(orf, "kegg_ko" == "ko")) %>% 
+  count(kegg_ko, ko_definition) %>% 
+  arrange(-n)
+
+```
+
+
+```{r}
+# Table with number and fraction of top 20% that are stress markers
+Total_top20_genes = DEG_KEGG_df %>% 
+  group_by(NT_ID) %>% 
+  count(Treatment, name = "Total") %>% 
+  ungroup()
+
+
+Stress_top20_genes = DEG_KEGG_df %>% 
+  group_by(NT_ID, Species) %>% 
+  filter(kegg_ko %in% Stress_response_genes$KEGG_Orthology_gene_groups) %>% 
+  count(Treatment, name = "Stress_genes") %>% 
+  ungroup()
+
+
+Total_stress_prop = full_join(Total_top20_genes, Stress_top20_genes) %>% 
+  mutate(nStress_genes = Total - Stress_genes,
+         Stress_prop = Stress_genes/Total) %>% 
+  pivot_longer(cols = c(Stress_genes, nStress_genes, Stress_prop), 
+               names_to = "Gene_cat", values_to = "Value")
+
+```
+
+
+```{r fig.width=12, fig.height=6}
+# Barplot
+Top20_Stress_barplot = Total_stress_prop %>%
+  filter(Gene_cat != "Stress_prop") %>% 
+  ggplot(aes(x = Treatment, y = Value, fill = Gene_cat)) +
+  geom_col() +
+  facet_grid(~Species) +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "bottom") +
+  labs(x = "Treatment", y = "Top 20 % highest expression genes") +
+  scale_y_continuous(expand = c(0,0), limits = c(0,615)) +
+  scale_fill_manual(values = c("darkgray", "firebrick"))
+
+Top20_Stress_barplot
+```
+
+```{r fig.width=4, fig.height=6}
+Top20_Stress_scatterplot = Total_stress_prop %>% 
+  filter(Gene_cat == "Stress_prop") %>% 
+  ggplot(aes(x = Treatment, y = Value))+
+  geom_jitter(width = 0.1, alpha = 0.7) +
+  stat_summary(fun.data = mean_se, fun.args = list(mult = 1), geom = "pointrange",
+               color = "firebrick3", alpha = 0.9, shape = 3) +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(y = "Fraction of top 20% genes that are stress markers")
+
+Top20_Stress_scatterplot
+```
+```{r}
+# Stats
+Total_stress_prop %>% 
+  filter(Gene_cat == "Stress_prop") %>% 
+  group_by(Treatment) %>% 
+  rstatix::get_summary_stats(show = c("mean", "sd")) %>% 
+  mutate(mean = round(mean, 2), sd = round(sd, 2)) %>% 
+  filter(variable == "Value")
+
+Total_stress_prop %>% 
+  filter(Gene_cat == "Stress_prop") %>% 
+  rstatix::t_test(Value~Treatment, ref.group = "DMSO", alternative = "less")
+```
+
+
+```{r}
+# # Export
+# ggpubr::ggexport(Top20_Stress_barplot,
+#          filename = file.path(figure_dir, "Com20_Top20_Stress_Barplot.pdf"),
+#          height = 6,
+#          width = 12)
+# 
+# # Export
+# ggpubr::ggexport(Top20_Stress_scatterplot,
+#          filename = file.path(figure_dir, "Com20_Top20_Stress_Scatter.pdf"),
+#          height = 6,
+#          width = 4)
+```
+
+
+# Source data
+```{r}
+Source_2G = Com20_median_tpm %>% 
+  pivot_wider(id_cols = c(orf, NT_ID, Species), values_from = median_tpm, names_from = Treatment)
+
+# write_tsv(Source_2G, file.path(base_dir, "Tables/source_data/Source_2G.tsv"))
+
+```
+
+
+```{r}
+Source_ED8B = Total_stress_prop %>%
+  filter(Gene_cat != "Stress_prop") %>% 
+  mutate(Species = str_replace(Species, "_", ". "),
+         Gene_cat = if_else(Gene_cat == "Stress_genes", "Stress", "Not-stress")) %>% 
+  select(NT_ID, Treatment, Species, Gene_category = Gene_cat, Number_genes = Value)
+
+# write_tsv(Source_ED8B, file.path(base_dir, "Tables/source_data/Source_ED8B.tsv"))
+```
+
+
+```{r}
+Source_ED8C = Total_stress_prop %>% 
+  filter(Gene_cat == "Stress_prop") %>% 
+  mutate(Species = str_replace(Species, "_", ". "),
+         Gene_cat = str_replace(Gene_cat, "Stress_prop", "Stress")) %>% 
+  select(NT_ID, Treatment, Species, Gene_category = Gene_cat, Proportion_genes = Value)
+
+# write_tsv(Source_ED8C, file.path(base_dir, "Tables/source_data/Source_ED8C.tsv"))
+```
+
