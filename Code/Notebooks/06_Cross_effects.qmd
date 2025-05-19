@@ -15,6 +15,7 @@ the data in the present script come from Taiyeb's files in
 NT5024 is a slow growing and we can't use them for MICs 
 NT5017 does not grow in mGAM so we decided to not use this strain for MICs as well
 
+
 # Libraries
 
 ```{r}
@@ -52,14 +53,21 @@ COM20_AUC_newest = file.path(base_dir, "Data/Monoculture_AUCs/2023_07_20_AUCs_to
     filter(!(drug %in% c("Gallidermin", "L15", "Rhodomyrtone", "PPAP23", "Polyethylene",
                        "Trimethoprim", "Ofloxacin", "Nalidixic acid", "Oxolinic acid")),
          Species != "Salmonella enterica typhimurium TolC") %>% 
-  mutate(drug = str_replace(drug, "Clomiphene", "Clomifen"))
+  mutate(drug = str_replace(drug, "Clomiphene", "Clomifen"),
+         drug = str_replace(drug, "L-Thyroxin", "L-Thyroxine"),
+         drug = str_replace(drug, "Pentamidine Isothionate", "Pentamidine isethionate"))
+
+
+
 ```
 
 
 ```{r}
 # importing the com20 dataset
 Com20_OD_lumi_raw = file.path(base_dir, "/Data/OD_Lumi_Selection/Com20_OD_lumi_select.tsv") %>% 
-  read_tsv()
+  read_tsv() %>% 
+    mutate(Drug = str_replace(Drug, "L-Thyroxin", "L-Thyroxine"),
+         Drug = str_replace(Drug, "Tiratricole", "Tiratricol"))
 
 COM20_OD_raw = Com20_OD_lumi_raw %>% 
   mutate(Drug = str_replace(Drug, "Clomiphene", "Clomifen")) %>% 
@@ -72,8 +80,6 @@ COM20_OD_raw = Com20_OD_lumi_raw %>%
   mutate(Treatment = str_c(Condition, Conc, sep = " ")) %>% 
   select(Treatment, mean_ODnorm) 
 ```
-
-
 
 ```{r}
 # 16S data
@@ -132,8 +138,6 @@ COM20_relabund_AUC = full_join(COM20_relabund_ratio, COM20_AUC_ratio,
          !str_detect(Treatment, "Ofloxacin"),
          !(str_detect(Treatment, "160") & is.na(normAUC)))
 ```
-
-
 ```{r}
 # Determine whether a strain is sensitized or protected on each treatment
 # Two steps, one by AUC and other by Relabund
@@ -143,8 +147,10 @@ COM20_cross_sensitivity = COM20_relabund_AUC %>%
          Result = case_when((AUC_hit == "Reduced" & Abund_hit == "Reduced") ~ "Reduced - expected",
                             (AUC_hit == "Normal" & Abund_hit == "Normal") ~ "Unchanged - expected",
                             (AUC_hit == "Reduced" & Abund_hit == "Normal") ~ "Protected",
-                            (AUC_hit == "Normal" & Abund_hit == "Reduced") ~ "Sensitized")) 
+                            (AUC_hit == "Normal" & Abund_hit == "Reduced") ~ "Sensitized"))
+```
 
+```{r}
 # Number of strains sensitized or protected by treatment
 Cross_sensitivity_count = COM20_cross_sensitivity %>% 
   group_by(Treatment) %>% 
@@ -154,8 +160,9 @@ Cross_sensitivity_count = COM20_cross_sensitivity %>%
                                             "Reduced - expected", 
                                             "Unchanged - expected", 
                                             "Sensitized")))
+```
 
-
+```{r}
 # Order of treatments based on number of expected
 Treat_order = Cross_sensitivity_count %>% 
   pivot_wider(id_cols = "Treatment", 
@@ -165,7 +172,6 @@ Treat_order = Cross_sensitivity_count %>%
   pull(Treatment)
 
 ```
-
 
 ```{r fig.height=6, fig.width=7}
 Cross_sensitivity_plot = Cross_sensitivity_count %>% 
@@ -198,7 +204,7 @@ Cross_sensitivity_plot
 
 # Source data
 ```{r}
-Source_ED4H = Cross_sensitivity_count %>% 
+Source_ED4H = Cross_sensitivity_plot$data %>% 
   mutate(Drug_Concentration = factor(Treatment, levels = Treat_order)) %>% 
   filter(Drug_Concentration != "Felodipine 20")
 

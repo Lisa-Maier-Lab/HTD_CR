@@ -1,0 +1,307 @@
+---
+title: "Scaled relative abundance of Com20"
+format: html
+---
+
+Jacobo de la Cuesta-Zuluaga. October 2022
+The aim of this notebook is to plot the biomass-scaled relative abundance of
+each member of Com20 after treatment based on the optical density (OD) of the 
+community
+ 
+
+# Libraries 
+```{r}
+library(tidyverse)
+library(ggpubr)
+library(rstatix)
+library(circlize)
+library(openxlsx)
+library(scales)
+library(conflicted)
+```
+
+
+```{r}
+# Solve conflicts
+conflict_prefer("filter", "dplyr")
+```
+
+```{r}
+# Set seed
+set.seed(2112)
+```
+
+# Load tables 
+```{r}
+# Directories
+base_dir = "/mnt/volume_1/dm_main/projects/Salmonella_invasion_paper"
+data_dir = file.path(base_dir, "Data/Taiyeb_data/fig15_16")
+figure_dir = file.path(base_dir, "Figures")
+tables_dir = file.path(base_dir, "Tables")
+
+# import abundance table
+counts_raw <- file.path(data_dir, "COM20_16Scounts.xlsx") %>% 
+  read.xlsx() 
+
+
+Com20_OD_lumi_raw = file.path(base_dir, "/Data/OD_Lumi_Selection/Com20_OD_lumi_select.tsv") %>% 
+  read_tsv() %>% 
+  select(Condition = Drug, Conc, Replicate, OD_norm = rel_OD) %>% 
+  mutate(Condition = str_replace(Condition, "L-Thyroxin", "L-Thyroxine"),
+         Condition = str_replace(Condition, "Tiratricole", "Tiratricol"))
+
+
+# OD values have come from previous analyses in fig2_3... folder
+ONODreads_raw <- file.path(data_dir, "OD_normalised.csv") %>% 
+  read.csv() 
+```
+
+# Prepare tables
+```{r}
+# Name of cols of COM20 species in DF
+com20_species_named = c("B. fragilis" =  "Bf",
+                  "B. thetaiotaomicron" = "Bt",
+                  "B. uniformis" = "Bu",
+                  "P. vulgatus" = "Bv",
+                  "P. merdae" = "Pm",
+                  "F. nucleatus" = "Fn",
+                  "C. aerofaciens" = "Ca",
+                  "E. lenta" = "El",
+                  "V. parvula" = "Vp",
+                  "S. parasanguinis" = "Sp",
+                  "S. salivarius" = "Ss",
+                  "T. ramosa" = "Cr",
+                  "C. perfringens" = "Cp",
+                  "L. saccharolytica" = "Cs",
+                  "A. rectalis" = "Er",
+                  "R. intestinalis" = "Ri",
+                  "E. bolteae" = "Cb",
+                  "B. comes" = "Cc",
+                  "D. formicigenerans" = "Df",
+                  "R. gnavus" = "Rg")
+
+com20_species = com20_species_named
+names(com20_species) = NULL
+
+Inhibitors = c("Trimethoprim", "Ofloxacin", "Nalidixic acid", "Oxolinic acid",
+               "Avermectin B1", "Avermectin")
+
+
+# Add condition/concentration column
+counts_full = counts_raw %>% 
+  mutate(drug_conc = paste(Condition,Conc,sep = " ")) 
+
+# Calculate relative abundance of each species in ASV table
+counts_relabund_raw = counts_full %>% 
+  column_to_rownames("Sample") %>% 
+  select(any_of(com20_species)) %>% 
+  vegan::decostand(method = "total", MARGIN = 1) %>% 
+  rownames_to_column("Sample")
+
+# Add missing metadata to relabund table
+counts_relabund = counts_full %>% 
+  select(-any_of(com20_species)) %>% 
+  left_join(., counts_relabund_raw, by = "Sample")
+```
+
+
+# Relative abundance and OD
+```{r}
+# Calculate relabund * OD
+#Com20_OD_lumi_raw ONODreads_raw
+counts_relabund_OD = left_join(counts_relabund, Com20_OD_lumi_raw, c("Condition", "Conc", "Replicate")) %>% 
+  filter(!(Condition %in% Inhibitors)) %>% 
+  arrange(Condition) %>% 
+  filter(Condition != "Comm", Condition != "Vancomycin") %>% 
+  mutate(OD_norm = if_else(Condition == "Control", 1, OD_norm)) %>% 
+  mutate(across(com20_species, .fns = function(x) x * OD_norm))
+```
+
+```{r}
+# Calculate mean of replicates
+mean_relabund_OD = counts_relabund_OD %>% 
+  select(Sample, drug_conc, Replicate, any_of(com20_species), OD_norm) %>% 
+  pivot_longer(-c(Sample, drug_conc, Replicate)) %>% 
+  mutate(drug_conc = str_replace(drug_conc, "Control.*", "Control")) %>% 
+  group_by(drug_conc, name) %>% 
+  summarise(mean_val = mean(value)) %>% 
+  ungroup() %>% 
+  pivot_wider(names_from = name, values_from = mean_val) %>% 
+  relocate(OD_norm, .after = drug_conc) %>% 
+  arrange(OD_norm) %>% 
+  mutate(drug_conc = fct_inorder(drug_conc))
+```
+
+
+# Plot 
+```{r}
+# Create data frame for heatmap
+mean_relabund_OD_long = mean_relabund_OD %>% 
+  pivot_longer(-drug_conc, values_to = "OD_relab") %>% 
+  mutate(name = case_when(name ==  "Bf" ~ "B. fragilis",
+                          name == "Bt" ~ "B. thetaiotaomicron",
+                          name == "Bu" ~ "B. uniformis",
+                          name == "Bv" ~ "P. vulgatus",
+                          name == "Pm" ~ "P. merdae",
+                          name == "Fn" ~ "F. nucleatus",
+                          name == "Ca" ~ "C. aerofaciens",
+                          name == "El" ~ "E. lenta",
+                          name == "Vp" ~ "V. parvula",
+                          name == "Sp" ~ "S. parasanguinis",
+                          name == "Ss" ~ "S. salivarius",
+                          name == "Cr" ~ "T. ramosa",
+                          name == "Cp" ~ "C. perfringens",
+                          name == "Cs" ~ "L. saccharolytica",
+                          name == "Er" ~ "A. rectalis",
+                          name == "Ri" ~ "R. intestinalis",
+                          name == "Cb" ~ "E. bolteae",
+                          name == "Cc" ~ "B. comes",
+                          name == "Df" ~ "D. formicigenerans",
+                          name == "Rg" ~ "R. gnavus",
+                          TRUE ~ name))
+
+# Order of Species in COM20 heatmap
+col_order = mean_relabund_OD_long %>% 
+  filter(name != "OD_norm") %>% 
+  group_by(name) %>% 
+  summarize(mean_OD_relab = mean(OD_relab)) %>% 
+  arrange(-mean_OD_relab)
+
+```
+
+```{r}
+# Heatmap of OD on each treatment
+heatmap_OD_raw = mean_relabund_OD_long %>% 
+  filter(name == "OD_norm") %>% 
+  ggplot(aes(x = name, y = factor(drug_conc))) +
+  geom_tile(aes(fill = (OD_relab))) +
+  scale_fill_distiller(palette = "Greys", 
+                       limits=c(0, 1.21),
+                       breaks=seq(0,1.2,by=0.4), 
+                       direction = 1) +
+  theme_light() +
+  theme(legend.position = "bottom") +
+  labs(y = "Condition", fill = "Normalized OD")
+
+# Remove legend
+heatmap_OD = heatmap_OD_raw +
+  theme(axis.text.x = element_blank(),
+        axis.text.y = element_text(size = 8),
+        axis.ticks.x = element_blank(),
+        legend.position = "none") +
+  rremove("xlab")
+
+# Get only legend
+heatmap_OD_legend = get_legend(heatmap_OD_raw) %>% 
+  as_ggplot()
+
+
+# Heatmap of OD * relabund
+mean_relabund_OD_long %>% 
+  filter(name != "OD_norm") %>% 
+  mutate(OD_relab = if_else(OD_relab == 0, 1, OD_relab)) %>% 
+  arrange(-OD_relab)
+
+heatmap_com20_raw = mean_relabund_OD_long %>% 
+  mutate(name = factor(name, levels = col_order$name)) %>% 
+  filter(name != "OD_norm") %>% 
+  ggplot(aes(x = name, y = factor(drug_conc))) +
+  geom_tile(aes(fill = (OD_relab))) +
+  scale_fill_viridis_c(option = "A", 
+                       direction = -1,
+                       na.value = "gray", 
+                       trans = "log10", 
+                       limits = c(-10, 1.1),
+                       breaks = trans_breaks("log10", function(x) 10^x, n = 4),
+                       labels = trans_format("log10", math_format(10^.x))) +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8, face = "italic"), 
+        legend.position = "bottom") +
+  labs(x = "Species", fill = "Relative abundance * OD")
+
+# remove legend
+heatmap_com20 = heatmap_com20_raw +
+  rremove("ylab") + 
+  theme(axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(), 
+        legend.position = "none")
+
+# Extract legend
+heatmap_com20_legend = get_legend(heatmap_com20_raw) %>% 
+  as_ggplot()
+```
+
+```{r}
+# Combine heatmap legends
+heatmap_legends = ggarrange(heatmap_OD_legend,
+                            heatmap_com20_legend, 
+                            nrow = 2)
+
+# Combine bodies of heatmaps
+heatmap_body = ggarrange(heatmap_OD, heatmap_com20,
+                         align = "h",
+                         widths = c(0.55, 1),
+                         nrow = 1,
+                         labels = NULL)
+
+# Final heatmap with bodies and legends
+OD_relab_heatmap = ggarrange(heatmap_body, heatmap_legends, 
+                             ncol = 1, 
+                             heights = c(5,1))
+
+```
+
+```{r fig.height=9, fig.width=7}
+# Print
+OD_relab_heatmap
+```
+
+```{r}
+# Export
+# ggexport(OD_relab_heatmap,
+#          filename = file.path(figure_dir, "Fig_2_OD_relab_heatmap.pdf"),
+#          height = 9,
+#          width = 7)
+```
+
+# Source data
+```{r}
+Source_ED4G = mean_relabund_OD %>% 
+  pivot_longer(-c(drug_conc, OD_norm), values_to = "OD_relab") %>% 
+  mutate(name = case_when(name ==  "Bf" ~ "B. fragilis",
+                          name == "Bt" ~ "B. thetaiotaomicron",
+                          name == "Bu" ~ "B. uniformis",
+                          name == "Bv" ~ "P. vulgatus",
+                          name == "Pm" ~ "P. merdae",
+                          name == "Fn" ~ "F. nucleatus",
+                          name == "Ca" ~ "C. aerofaciens",
+                          name == "El" ~ "E. lenta",
+                          name == "Vp" ~ "V. parvula",
+                          name == "Sp" ~ "S. parasanguinis",
+                          name == "Ss" ~ "S. salivarius",
+                          name == "Cr" ~ "T. ramosa",
+                          name == "Cp" ~ "C. perfringens",
+                          name == "Cs" ~ "L. saccharolytica",
+                          name == "Er" ~ "A. rectalis",
+                          name == "Ri" ~ "R. intestinalis",
+                          name == "Cb" ~ "E. bolteae",
+                          name == "Cc" ~ "B. comes",
+                          name == "Df" ~ "D. formicigenerans",
+                          name == "Rg" ~ "R. gnavus",
+                          TRUE ~ name)) %>% 
+  select(Spp = name, drug_concentration = drug_conc, OD_norm, Relabund_OD = OD_relab)
+
+# write_tsv(Source_ED4G, file.path(base_dir, "Tables/source_data/Source_ED4G.tsv"))
+```
+
+```{r}
+Source_ED4G %>% 
+  count(drug_concentration)
+```
+
+
+```{r}
+mean_relabund_OD %>% 
+  filter(drug_conc != "Control") %>% 
+  arrange(drug_conc)
+```
