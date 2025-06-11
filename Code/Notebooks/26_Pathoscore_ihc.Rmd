@@ -1,0 +1,1183 @@
+---
+title: "Histology & immunohistochemistry analysis"
+output:
+  word_document: default
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+Jan Homolak. May 2025.
+
+The aim of this notebook is to compare pathoscores and cell staining obtained by immunohistochemistry between DMSO (vehicle)– and Terfenadine-treated mice, with or without exposure to S. Tm.
+
+## Load Required Libraries
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(readxl)
+library(scales)
+library(emmeans)
+library(lme4)
+```
+
+## Set Path and Color Palettes
+
+```{r}
+#Set path to your data folder
+path <- c("C:/Users/Korisnik/Desktop/Experiments/Experiments/Experiments 2024/Anne/Anne Histo/final/")
+
+#Color palettes for plots
+colorlist_orange <- c("#EE7600", "#EE7600")
+colorlist_grey <- c("#84838B", "#84838B")
+
+```
+
+## Pathoscore Analysis: Infection Group
+
+```{r}
+#Load data for infection group
+pathoscore_data <- read_excel(paste0(path, "Fig_4.xlsx"), sheet = "4I") %>%
+filter(Infection == "infection")
+
+#Fit GLMM
+model <- glmer(Pathoscore + 0.01 ~ Treatment + (1 | Mouse),
+data = pathoscore_data,
+family = Gamma(link = "log"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ Treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ Treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+## Plot: Pathoscore (Infection Group)
+
+```{r}
+plot_infection <- ggplot(data_model, aes(Treatment, response)) +
+  geom_point(data = pathoscore_data, 
+             aes(Treatment, Pathoscore, color = Treatment), 
+             position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.3),
+             alpha = 0.5,
+             size = 3,
+             show.legend = FALSE) +
+  geom_point(size = 3, color = "firebrick3", shape = 3) +
+  geom_errorbar(aes(ymin = response - SE, ymax = response + SE), 
+                color = "firebrick3", width = 0, linewidth = 0.5) +
+  theme_light() + 
+  ylab("Pathoscore") + 
+  ggtitle("Infection Group") +
+  geom_text(data = contrast_results, 
+            aes(x = 1.5, y = 2.5, label = paste("p =", sig)), 
+            size = 4, vjust = -1) +
+  scale_y_continuous(breaks = c(0, 4, 9, 13)) +
+  geom_rect(ymin = 0, ymax = 4, xmin = -Inf, xmax = 0.7, 
+            fill = "grey", alpha = 0.2, color = "black") +
+  geom_rect(ymin = 4, ymax = 9, xmin = -Inf, xmax = 0.7, 
+            fill = "grey", alpha = 0.2, color = "black") +
+  geom_rect(ymin = 9, ymax = 13, xmin = -Inf, xmax = 0.7, 
+            fill = "grey", alpha = 0.2, color = "black") +
+    ggplot2::annotate("text", x = 0.55, y = 2, label = "No\ninflammation", color = "black", size = 3, angle = 90) +
+  ggplot2::annotate("text", x = 0.55, y = 6.5, label = "Mild\ninflammation", color = "black", size = 3, angle = 90) +
+  ggplot2::annotate("text", x = 0.55, y = 11, label = "Severe\ninflammation", color = "black", size = 3, angle = 90) +
+  scale_color_manual(values = c("#EE7600", "#EE7600"))
+
+plot_infection
+```
+
+## Pathoscore Analysis: No Infection Group
+
+```{r}
+#Load data for no infection group
+pathoscore_data <- read_excel(paste0(path, "Fig_4.xlsx"), sheet = "4I") %>%
+filter(Infection == "no infection")
+
+#Fit GLMM
+model <- glmer(Pathoscore + 0.01 ~ Treatment + (1 | Mouse),
+data = pathoscore_data,
+family = Gamma(link = "log"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ Treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ Treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+## Plot: Pathoscore (No Infection Group)
+
+```{r}
+plot_no_infection <- ggplot(data_model, aes(Treatment, response)) +
+  geom_point(data = pathoscore_data, 
+             aes(Treatment, Pathoscore, color = Treatment), 
+             position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.3),
+             alpha = 0.5,
+             size = 3,
+             show.legend = FALSE) +
+  geom_point(size = 3, color = "firebrick3", shape = 3) +
+  geom_errorbar(aes(ymin = response - SE, ymax = response + SE), 
+                color = "firebrick3", width = 0, linewidth = 0.5) +
+  theme_light() + 
+  ylab("Pathoscore") + 
+  ggtitle("Infection Group") +
+  geom_text(data = contrast_results, 
+            aes(x = 1.5, y = 2.5, label = paste("p =", sig)), 
+            size = 4, vjust = -1) +
+  scale_y_continuous(breaks = c(0, 4, 9, 13)) +
+  geom_rect(ymin = 0, ymax = 4, xmin = -Inf, xmax = 0.7, 
+            fill = "grey", alpha = 0.2, color = "black") +
+  geom_rect(ymin = 4, ymax = 9, xmin = -Inf, xmax = 0.7, 
+            fill = "grey", alpha = 0.2, color = "black") +
+  geom_rect(ymin = 9, ymax = 13, xmin = -Inf, xmax = 0.7, 
+            fill = "grey", alpha = 0.2, color = "black") +
+  ggplot2::annotate("text", x = 0.55, y = 2, label = "No\ninflammation", color = "black", size = 3, angle = 90) +
+  ggplot2::annotate("text", x = 0.55, y = 6.5, label = "Mild\ninflammation", color = "black", size = 3, angle = 90) +
+  ggplot2::annotate("text", x = 0.55, y = 11, label = "Severe\ninflammation", color = "black", size = 3, angle = 90) +
+  scale_color_manual(values = c("#84838B", "#84838B"))
+
+plot_no_infection
+```
+## CD4 IHC Analysis
+
+```{r}
+#Load IHC data (CD4, infection group)
+ihc_data <- read_excel(paste0(path, "Fig_S1.xlsx"), sheet = "S1F") %>%
+filter(staining == "CD4" & infection == "infection")
+
+#Fit GLMM for CD4+ cells
+model <- glmer(num_pos_per_mm2 ~ treatment + (1 | animal),
+data = ihc_data,
+family = Gamma(link = "log"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+
+## Plot: CD4 IHC (Infection Group)
+
+```{r}
+plot_cd4_inf <- ggplot(data_model, aes(treatment, response)) +
+geom_point(data = ihc_data, aes(treatment, num_pos_per_mm2, color = treatment),
+position = position_jitterdodge(jitter.width = 0.3), alpha = 0.5, size = 3) +
+geom_point(size = 3, color = "firebrick3", shape = 3) +
+geom_errorbar(aes(ymin = response - SE, ymax = response + SE), color = "firebrick3", width = 0, linewidth = 0.5) +
+theme_light() + ylab(expression("Positive cells per mm"^2)) + ggtitle("CD4+ Cells") +
+geom_text(data = contrast_results, aes(x = 1.5, y = 10, label = paste("p =", sig)), size = 4, vjust = -1) +
+scale_y_log10()+
+scale_color_manual(values = c("#EE7600", "#EE7600"))
+
+plot_cd4_inf
+```
+## Plot: CD4 IHC (No Infection Group)
+
+```{r}
+#Load IHC data (CD4, no infection group)
+ihc_data <- read_excel(paste0(path, "Fig_S1.xlsx"), sheet = "S1F") %>%
+filter(staining == "CD4" & infection == "no infection")
+
+#Fit GLMM for CD4+ cells
+model <- glmer(num_pos_per_mm2 ~ treatment + (1 | animal),
+data = ihc_data,
+family = Gamma(link = "log"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+
+
+
+```{r}
+plot_cd4_no_inf <- ggplot(data_model, aes(treatment, response)) +
+geom_point(data = ihc_data, aes(treatment, num_pos_per_mm2, color = treatment),
+position = position_jitterdodge(jitter.width = 0.3), alpha = 0.5, size = 3) +
+geom_point(size = 3, color = "firebrick3", shape = 3) +
+geom_errorbar(aes(ymin = response - SE, ymax = response + SE), color = "firebrick3", width = 0, linewidth = 0.5) +
+theme_light() + ylab(expression("Positive cells per mm"^2)) + ggtitle("CD4+ Cells") +
+geom_text(data = contrast_results, aes(x = 1.5, y = 10, label = paste("p =", sig)), size = 4, vjust = -1) +
+scale_y_log10()+
+scale_color_manual(values = c("#84838B", "#84838B"))
+
+plot_cd4_no_inf
+```
+
+
+
+
+
+
+## CD11b IHC Analysis
+
+```{r}
+#Load IHC data (CD11b, infection group)
+ihc_data <- read_excel(paste0(path, "Fig_S1.xlsx"), sheet = "S1B") %>%
+filter(staining == "CD11b" & infection == "infection")
+
+#Fit GLMM for CD11b cells
+model <- glmer(num_pos_per_mm2 ~ treatment + (1 | animal),
+data = ihc_data,
+family = Gamma(link = "log"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+
+## Plot: CD11b IHC (Infection Group)
+
+```{r}
+plot_cd11b_inf <- ggplot(data_model, aes(treatment, response)) +
+geom_point(data = ihc_data, aes(treatment, num_pos_per_mm2, color = treatment),
+position = position_jitterdodge(jitter.width = 0.3), alpha = 0.5, size = 3) +
+geom_point(size = 3, color = "firebrick3", shape = 3) +
+geom_errorbar(aes(ymin = response - SE, ymax = response + SE), color = "firebrick3", width = 0, linewidth = 0.5) +
+theme_light() + ylab(expression("Positive cells per mm"^2)) + ggtitle("CD11b Cells") +
+geom_text(data = contrast_results, aes(x = 1.5, y = 10, label = paste("p =", sig)), size = 4, vjust = -1) +
+scale_y_log10()+
+scale_color_manual(values = c("#EE7600", "#EE7600"))
+
+plot_cd11b_inf
+```
+## Plot: CD11b IHC (No Infection Group)
+
+```{r}
+#Load IHC data (CD11b, no infection group)
+ihc_data <- read_excel(paste0(path, "Fig_S1.xlsx"), sheet = "S1B") %>%
+filter(staining == "CD11b" & infection == "no infection")
+
+#Fit GLMM for CD11b cells
+model <- glmer(num_pos_per_mm2 ~ treatment + (1 | animal),
+data = ihc_data,
+family = Gamma(link = "log"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+
+
+
+```{r}
+plot_cd11b_no_inf <- ggplot(data_model, aes(treatment, response)) +
+geom_point(data = ihc_data, aes(treatment, num_pos_per_mm2, color = treatment),
+position = position_jitterdodge(jitter.width = 0.3), alpha = 0.5, size = 3) +
+geom_point(size = 3, color = "firebrick3", shape = 3) +
+geom_errorbar(aes(ymin = response - SE, ymax = response + SE), color = "firebrick3", width = 0, linewidth = 0.5) +
+theme_light() + ylab(expression("Positive cells per mm"^2)) + ggtitle("CD11b Cells") +
+geom_text(data = contrast_results, aes(x = 1.5, y = 10, label = paste("p =", sig)), size = 4, vjust = -1) +
+scale_y_log10()+
+scale_color_manual(values = c("#84838B", "#84838B"))
+
+plot_cd11b_no_inf
+```
+
+## CD11c IHC Analysis
+
+```{r}
+#Load IHC data (CD11c, no infection group)
+ihc_data <- read_excel(paste0(path, "Fig_S1.xlsx"), sheet = "S1C") %>%
+filter(staining == "CD11c" & infection == "infection")
+
+#Fit GLMM for CD11c cells
+model <- glmer(num_pos_per_mm2 ~ treatment + (1 | animal),
+data = ihc_data,
+family = Gamma(link = "log"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+
+## Plot: CD11c IHC (Infection Group)
+
+```{r}
+plot_cd11c_inf <- ggplot(data_model, aes(treatment, response)) +
+geom_point(data = ihc_data, aes(treatment, num_pos_per_mm2, color = treatment),
+position = position_jitterdodge(jitter.width = 0.3), alpha = 0.5, size = 3) +
+geom_point(size = 3, color = "firebrick3", shape = 3) +
+geom_errorbar(aes(ymin = response - SE, ymax = response + SE), color = "firebrick3", width = 0, linewidth = 0.5) +
+theme_light() + ylab(expression("Positive cells per mm"^2)) + ggtitle("CD11c Cells") +
+geom_text(data = contrast_results, aes(x = 1.5, y = 10, label = paste("p =", sig)), size = 4, vjust = -1) +
+scale_y_log10()+
+scale_color_manual(values = c("#EE7600", "#EE7600"))
+
+plot_cd11c_inf
+```
+```{r}
+#Load IHC data (CD11c, no infection group)
+ihc_data <- read_excel(paste0(path, "Fig_S1.xlsx"), sheet = "S1C") %>%
+filter(staining == "CD11c" & infection == "no infection")
+
+#Fit GLMM for CD11c cells
+model <- glmer(num_pos_per_mm2 ~ treatment + (1 | animal),
+data = ihc_data,
+family = Gamma(link = "log"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+
+
+
+```{r}
+plot_cd11c_no_inf <- ggplot(data_model, aes(treatment, response)) +
+geom_point(data = ihc_data, aes(treatment, num_pos_per_mm2, color = treatment),
+position = position_jitterdodge(jitter.width = 0.3), alpha = 0.5, size = 3) +
+geom_point(size = 3, color = "firebrick3", shape = 3) +
+geom_errorbar(aes(ymin = response - SE, ymax = response + SE), color = "firebrick3", width = 0, linewidth = 0.5) +
+theme_light() + ylab(expression("Positive cells per mm"^2)) + ggtitle("CD11c Cells") +
+geom_text(data = contrast_results, aes(x = 1.5, y = 10, label = paste("p =", sig)), size = 4, vjust = -1) +
+scale_y_log10()+
+scale_color_manual(values = c("#84838B", "#84838B"))
+
+plot_cd11c_no_inf
+```
+
+
+
+
+## F4/80 IHC Analysis
+
+```{r}
+#Load IHC data (F4/80, infection group)
+ihc_data <- read_excel(paste0(path, "Fig_S1.xlsx"), sheet = "S1D") %>%
+filter(staining == "F480" & infection == "infection")
+
+#Fit GLMM for F4/80 cells
+model <- glmer(num_pos_per_mm2 ~ treatment + (1 | animal),
+data = ihc_data,
+family = Gamma(link = "log"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+
+## Plot: F4/80 IHC (Infection Group)
+
+```{r}
+plot_f480_inf <- ggplot(data_model, aes(treatment, response)) +
+geom_point(data = ihc_data, aes(treatment, num_pos_per_mm2, color = treatment),
+position = position_jitterdodge(jitter.width = 0.3), alpha = 0.5, size = 3) +
+geom_point(size = 3, color = "firebrick3", shape = 3) +
+geom_errorbar(aes(ymin = response - SE, ymax = response + SE), color = "firebrick3", width = 0, linewidth = 0.5) +
+theme_light() + ylab(expression("Positive cells per mm"^2)) + ggtitle("F4/80 Cells") +
+geom_text(data = contrast_results, aes(x = 1.5, y = 10, label = paste("p =", sig)), size = 4, vjust = -1) +
+scale_y_log10()+
+scale_color_manual(values = c("#EE7600", "#EE7600"))
+
+plot_f480_inf
+
+```
+```{r}
+#Load IHC data (F4/80, no infection group)
+ihc_data <- read_excel(paste0(path, "Fig_S1.xlsx"), sheet = "S1D") %>%
+filter(staining == "F480" & infection == "no infection")
+
+#Fit GLMM for F4/80 cells
+model <- glmer(num_pos_per_mm2 ~ treatment + (1 | animal),
+data = ihc_data,
+family = Gamma(link = "log"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+
+
+
+```{r}
+plot_f480_no_inf <- ggplot(data_model, aes(treatment, response)) +
+geom_point(data = ihc_data, aes(treatment, num_pos_per_mm2, color = treatment),
+position = position_jitterdodge(jitter.width = 0.3), alpha = 0.5, size = 3) +
+geom_point(size = 3, color = "firebrick3", shape = 3) +
+geom_errorbar(aes(ymin = response - SE, ymax = response + SE), color = "firebrick3", width = 0, linewidth = 0.5) +
+theme_light() + ylab(expression("Positive cells per mm"^2)) + ggtitle("F4/80 Cells") +
+geom_text(data = contrast_results, aes(x = 1.5, y = 10, label = paste("p =", sig)), size = 4, vjust = -1) +
+scale_y_log10()+
+scale_color_manual(values = c("#84838B", "#84838B"))
+
+plot_f480_no_inf
+```
+
+## B220 IHC Analysis
+
+```{r}
+#Load IHC data (B220, infection group)
+ihc_data <- read_excel(paste0(path, "Fig_S1.xlsx"), sheet = "S1E") %>%
+filter(staining == "B220" & infection == "infection")
+
+#Fit GLMM for B220 cells
+model <- glmer(num_pos_per_mm2 ~ treatment + (1 | animal),
+data = ihc_data,
+family = Gamma(link = "log"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+
+## Plot: B220 IHC (Infection Group)
+
+```{r}
+plot_b220_inf <- ggplot(data_model, aes(treatment, response)) +
+geom_point(data = ihc_data, aes(treatment, num_pos_per_mm2, color = treatment),
+position = position_jitterdodge(jitter.width = 0.3), alpha = 0.5, size = 3) +
+geom_point(size = 3, color = "firebrick3", shape = 3) +
+geom_errorbar(aes(ymin = response - SE, ymax = response + SE), color = "firebrick3", width = 0, linewidth = 0.5) +
+theme_light() + ylab(expression("Positive cells per mm"^2)) + ggtitle("B220 Cells") +
+geom_text(data = contrast_results, aes(x = 1.5, y = 10, label = paste("p =", sig)), size = 4, vjust = -1) +
+scale_y_log10()+
+scale_color_manual(values = c("#EE7600", "#EE7600"))
+
+plot_b220_inf
+```
+```{r}
+#Load IHC data (B220, no infection group)
+ihc_data <- read_excel(paste0(path, "Fig_S1.xlsx"), sheet = "S1E") %>%
+filter(staining == "B220" & infection == "no infection")
+
+#Fit GLMM for B220 cells
+model <- glmer(num_pos_per_mm2 + 0.01 ~ treatment + (1 | animal),
+data = ihc_data,
+family = Gamma(link = "log"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+
+
+
+```{r}
+plot_b220_no_inf <- ggplot(data_model, aes(treatment, response)) +
+geom_point(data = ihc_data, aes(treatment, num_pos_per_mm2, color = treatment),
+position = position_jitterdodge(jitter.width = 0.3), alpha = 0.5, size = 3) +
+geom_point(size = 3, color = "firebrick3", shape = 3) +
+geom_errorbar(aes(ymin = response - SE, ymax = response + SE), color = "firebrick3", width = 0, linewidth = 0.5) +
+theme_light() + ylab(expression("Positive cells per mm"^2)) + ggtitle("B220 Cells") +
+geom_text(data = contrast_results, aes(x = 1.5, y = 10, label = paste("p =", sig)), size = 4, vjust = -1) +
+scale_y_log10()+
+scale_color_manual(values = c("#84838B", "#84838B"))
+
+plot_b220_no_inf
+```
+
+## CD8 IHC Analysis
+
+```{r}
+#Load IHC data (CD8, infection group)
+ihc_data <- read_excel(paste0(path, "Fig_S1.xlsx"), sheet = "S1G") %>%
+filter(staining == "CD8" & infection == "infection")
+
+#Fit GLMM for CD8 cells
+model <- glmer(num_pos_per_mm2 ~ treatment + (1 | animal),
+data = ihc_data,
+family = Gamma(link = "log"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+
+## Plot: CD8 IHC (Infection Group)
+
+```{r}
+plot_cd8_inf <- ggplot(data_model, aes(treatment, response)) +
+geom_point(data = ihc_data, aes(treatment, num_pos_per_mm2, color = treatment),
+position = position_jitterdodge(jitter.width = 0.3), alpha = 0.5, size = 3) +
+geom_point(size = 3, color = "firebrick3", shape = 3) +
+geom_errorbar(aes(ymin = response - SE, ymax = response + SE), color = "firebrick3", width = 0, linewidth = 0.5) +
+theme_light() + ylab(expression("Positive cells per mm"^2)) + ggtitle("CD8 Cells") +
+geom_text(data = contrast_results, aes(x = 1.5, y = 10, label = paste("p =", sig)), size = 4, vjust = -1) +
+scale_y_log10()+
+scale_color_manual(values = c("#EE7600", "#EE7600"))
+
+plot_cd8_inf
+```
+```{r}
+#Load IHC data (CD8, infection group)
+ihc_data <- read_excel(paste0(path, "Fig_S1.xlsx"), sheet = "S1G") %>%
+filter(staining == "CD8" & infection == "no infection")
+
+#Fit GLMM for CD8 cells
+model <- glmer(num_pos_per_mm2 ~ treatment + (1 | animal),
+data = ihc_data,
+family = Gamma(link = "log"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+
+
+
+```{r}
+plot_cd8_no_inf <- ggplot(data_model, aes(treatment, response)) +
+geom_point(data = ihc_data, aes(treatment, num_pos_per_mm2, color = treatment),
+position = position_jitterdodge(jitter.width = 0.3), alpha = 0.5, size = 3) +
+geom_point(size = 3, color = "firebrick3", shape = 3) +
+geom_errorbar(aes(ymin = response - SE, ymax = response + SE), color = "firebrick3", width = 0, linewidth = 0.5) +
+theme_light() + ylab(expression("Positive cells per mm"^2)) + ggtitle("CD8 Cells") +
+geom_text(data = contrast_results, aes(x = 1.5, y = 10, label = paste("p =", sig)), size = 4, vjust = -1) +
+scale_y_log10()+
+scale_color_manual(values = c("#84838B", "#84838B"))
+
+plot_cd8_no_inf
+```
+
+## cas3 IHC Analysis
+
+```{r}
+#Load IHC data (cas3, infection group)
+ihc_data <- read_excel(paste0(path, "Fig_S1.xlsx"), sheet = "S1H") %>%
+filter(staining == "cas3" & infection == "infection")
+
+#Fit GLMM for cas3 cells
+model <- glmer(num_pos_per_mm2 ~ treatment + (1 | animal),
+data = ihc_data,
+family = Gamma(link = "log"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+
+## Plot: cas3 IHC (Infection Group)
+
+```{r}
+plot_cas3_inf <- ggplot(data_model, aes(treatment, response)) +
+geom_point(data = ihc_data, aes(treatment, num_pos_per_mm2, color = treatment),
+position = position_jitterdodge(jitter.width = 0.3), alpha = 0.5, size = 3) +
+geom_point(size = 3, color = "firebrick3", shape = 3) +
+geom_errorbar(aes(ymin = response - SE, ymax = response + SE), color = "firebrick3", width = 0, linewidth = 0.5) +
+theme_light() + ylab(expression("Positive cells per mm"^2)) + ggtitle("cas3 Cells") +
+geom_text(data = contrast_results, aes(x = 1.5, y = 10, label = paste("p =", sig)), size = 4, vjust = -1) +
+scale_y_log10()+
+scale_color_manual(values = c("#EE7600", "#EE7600"))
+
+plot_cas3_inf
+```
+```{r}
+#Load IHC data (cas3, no infection group)
+ihc_data <- read_excel(paste0(path, "Fig_S1.xlsx"), sheet = "S1H") %>%
+filter(staining == "cas3" & infection == "no infection")
+
+#Fit GLMM for cas3 cells
+model <- glmer(num_pos_per_mm2 ~ treatment + (1 | animal),
+data = ihc_data,
+family = Gamma(link = "log"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+
+
+
+```{r}
+plot_cas3_no_inf <- ggplot(data_model, aes(treatment, response)) +
+geom_point(data = ihc_data, aes(treatment, num_pos_per_mm2, color = treatment),
+position = position_jitterdodge(jitter.width = 0.3), alpha = 0.5, size = 3) +
+geom_point(size = 3, color = "firebrick3", shape = 3) +
+geom_errorbar(aes(ymin = response - SE, ymax = response + SE), color = "firebrick3", width = 0, linewidth = 0.5) +
+theme_light() + ylab(expression("Positive cells per mm"^2)) + ggtitle("cas3 Cells") +
+geom_text(data = contrast_results, aes(x = 1.5, y = 10, label = paste("p =", sig)), size = 4, vjust = -1) +
+scale_y_log10()+
+scale_color_manual(values = c("#84838B", "#84838B"))
+
+plot_cas3_no_inf
+```
+
+## Ki67 IHC Analysis
+
+```{r}
+#Load IHC data (Ki67, infection group)
+ihc_data <- read_excel(paste0(path, "Fig_S1.xlsx"), sheet = "S1I") %>%
+filter(staining == "Ki67" & infection == "infection")
+
+#Fit GLMM for Ki67 cells
+model <- glmer(num_pos_per_mm2 ~ treatment + (1 | animal),
+data = ihc_data,
+family = Gamma(link = "log"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+
+## Plot: Ki67 IHC (Infection Group)
+
+```{r}
+plot_Ki67_inf <- ggplot(data_model, aes(treatment, response)) +
+geom_point(data = ihc_data, aes(treatment, num_pos_per_mm2, color = treatment),
+position = position_jitterdodge(jitter.width = 0.3), alpha = 0.5, size = 3) +
+geom_point(size = 3, color = "firebrick3", shape = 3) +
+geom_errorbar(aes(ymin = response - SE, ymax = response + SE), color = "firebrick3", width = 0, linewidth = 0.5) +
+theme_light() + ylab(expression("Positive cells per mm"^2)) + ggtitle("Ki67 Cells") +
+geom_text(data = contrast_results, aes(x = 1.5, y = 10, label = paste("p =", sig)), size = 4, vjust = -1) +
+scale_y_log10()+
+scale_color_manual(values = c("#EE7600", "#EE7600"))
+
+plot_Ki67_inf
+```
+```{r}
+#Load IHC data (Ki67, no infection group)
+ihc_data <- read_excel(paste0(path, "Fig_S1.xlsx"), sheet = "S1I") %>%
+filter(staining == "Ki67" & infection == "no infection")
+
+#Fit GLMM for Ki67 cells
+model <- glmer(num_pos_per_mm2 ~ treatment + (1 | animal),
+data = ihc_data,
+family = Gamma(link = "log"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+
+
+
+```{r}
+plot_Ki67_no_inf <- ggplot(data_model, aes(treatment, response)) +
+geom_point(data = ihc_data, aes(treatment, num_pos_per_mm2, color = treatment),
+position = position_jitterdodge(jitter.width = 0.3), alpha = 0.5, size = 3) +
+geom_point(size = 3, color = "firebrick3", shape = 3) +
+geom_errorbar(aes(ymin = response - SE, ymax = response + SE), color = "firebrick3", width = 0, linewidth = 0.5) +
+theme_light() + ylab(expression("Positive cells per mm"^2)) + ggtitle("Ki67 Cells") +
+geom_text(data = contrast_results, aes(x = 1.5, y = 10, label = paste("p =", sig)), size = 4, vjust = -1) +
+scale_y_log10()+
+scale_color_manual(values = c("#84838B", "#84838B"))
+
+plot_Ki67_no_inf
+```
+
+
+## CD31 IHC Analysis
+
+```{r}
+#Load IHC data (CD31, infection group)
+ihc_data <- read_excel(paste0(path, "Fig_S1.xlsx"), sheet = "S1J") %>%
+filter(staining == "CD31" & infection == "infection")
+
+#Fit GLMM for CD31 cells
+model <- glmer(num_pos_per_mm2 ~ treatment + (1 | animal),
+data = ihc_data,
+family = Gamma(link = "log"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+
+## Plot: CD31 IHC (Infection Group)
+
+```{r}
+plot_CD31_inf <- ggplot(data_model, aes(treatment, response)) +
+geom_point(data = ihc_data, aes(treatment, num_pos_per_mm2, color = treatment),
+position = position_jitterdodge(jitter.width = 0.3), alpha = 0.5, size = 3) +
+geom_point(size = 3, color = "firebrick3", shape = 3) +
+geom_errorbar(aes(ymin = response - SE, ymax = response + SE), color = "firebrick3", width = 0, linewidth = 0.5) +
+theme_light() + ylab(expression("Positive cells per mm"^2)) + ggtitle("CD31 Cells") +
+geom_text(data = contrast_results, aes(x = 1.5, y = 10, label = paste("p =", sig)), size = 4, vjust = -1) +
+scale_y_log10()+
+scale_color_manual(values = c("#EE7600", "#EE7600"))
+
+plot_CD31_inf
+```
+```{r}
+#Load IHC data (CD31, no infection group)
+ihc_data <- read_excel(paste0(path, "Fig_S1.xlsx"), sheet = "S1J") %>%
+filter(staining == "CD31" & infection == "no infection")
+
+#Fit GLMM for CD31 cells
+model <- glmer(num_pos_per_mm2 ~ treatment + (1 | animal),
+data = ihc_data,
+family = Gamma(link = "log"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+
+
+
+```{r}
+plot_CD31_no_inf <- ggplot(data_model, aes(treatment, response)) +
+geom_point(data = ihc_data, aes(treatment, num_pos_per_mm2, color = treatment),
+position = position_jitterdodge(jitter.width = 0.3), alpha = 0.5, size = 3) +
+geom_point(size = 3, color = "firebrick3", shape = 3) +
+geom_errorbar(aes(ymin = response - SE, ymax = response + SE), color = "firebrick3", width = 0, linewidth = 0.5) +
+theme_light() + ylab(expression("Positive cells per mm"^2)) + ggtitle("CD31 Cells") +
+geom_text(data = contrast_results, aes(x = 1.5, y = 10, label = paste("p =", sig)), size = 4, vjust = -1) +
+scale_y_log10()+
+scale_color_manual(values = c("#84838B", "#84838B"))
+
+plot_CD31_no_inf
+```
+
+
+## Hif1a IHC Analysis
+
+```{r}
+#Load IHC data (Hif1a, infection group)
+ihc_data <- read_excel(paste0(path, "Fig_S1.xlsx"), sheet = "S1K") %>%
+filter(staining == "Hif1a" & infection == "infection")
+
+#Fit GLMM for Hif1a cells
+model <- glmer(dab_intensity ~ treatment + (1 | animal),
+data = ihc_data,
+family = Gamma(link = "identity"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+
+## Plot: Hif1a IHC (Infection Group)
+
+```{r}
+plot_Hif1a_inf <- ggplot(data_model, aes(treatment, emmean)) +
+geom_point(data = ihc_data, aes(treatment, dab_intensity, color = treatment),
+position = position_jitterdodge(jitter.width = 0.3), alpha = 0.5, size = 3) +
+geom_point(size = 3, color = "firebrick3", shape = 3) +
+geom_errorbar(aes(ymin = emmean - SE, ymax = emmean + SE), color = "firebrick3", width = 0, linewidth = 0.5) +
+theme_light() + ylab(expression("Mean nucleus intensity per field of view")) + ggtitle("Hif1a Cells") +
+geom_text(data = contrast_results, aes(x = 1.5, y = 0.2, label = paste("p =", sig)), size = 4, vjust = -1) +
+scale_y_log10()+
+scale_color_manual(values = c("#EE7600", "#EE7600"))
+
+plot_Hif1a_inf
+```
+```{r}
+#Load IHC data (Hif1a, no infection group)
+ihc_data <- read_excel(paste0(path, "Fig_S1.xlsx"), sheet = "S1K") %>%
+filter(staining == "Hif1a" & infection == "no infection")
+
+#Fit GLMM for Hif1a cells
+model <- glmer(dab_intensity ~ treatment + (1 | animal),
+data = ihc_data,
+family = Gamma(link = "identity"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+
+```{r}
+plot_Hif1a_no_inf <- ggplot(data_model, aes(treatment, emmean)) +
+geom_point(data = ihc_data, aes(treatment, dab_intensity, color = treatment),
+position = position_jitterdodge(jitter.width = 0.3), alpha = 0.5, size = 3) +
+geom_point(size = 3, color = "firebrick3", shape = 3) +
+geom_errorbar(aes(ymin = emmean - SE, ymax = emmean + SE), color = "firebrick3", width = 0, linewidth = 0.5) +
+theme_light() + ylab(expression("Positive cells per mm"^2)) + ggtitle("Hif1a Cells") +
+geom_text(data = contrast_results, aes(x = 1.5, y = 0.2, label = paste("p =", sig)), size = 4, vjust = -1) +
+scale_y_log10()+
+scale_color_manual(values = c("#84838B", "#84838B"))
+
+plot_Hif1a_no_inf
+```
+
+## RelA IHC Analysis
+
+```{r}
+#Load IHC data (RelA, infection group)
+ihc_data <- read_excel(paste0(path, "Fig_S1.xlsx"), sheet = "S1L") %>%
+filter(staining == "RelA" & infection == "infection")
+
+#Fit GLMM for Hif1a cells
+model <- glmer(dab_intensity ~ treatment + (1 | animal),
+data = ihc_data,
+family = Gamma(link = "identity"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+
+## Plot: RelA IHC (Infection Group)
+
+```{r}
+plot_RelA_inf <- ggplot(data_model, aes(treatment, emmean)) +
+geom_point(data = ihc_data, aes(treatment, dab_intensity, color = treatment),
+position = position_jitterdodge(jitter.width = 0.3), alpha = 0.5, size = 3) +
+geom_point(size = 3, color = "firebrick3", shape = 3) +
+geom_errorbar(aes(ymin = emmean - SE, ymax = emmean + SE), color = "firebrick3", width = 0, linewidth = 0.5) +
+theme_light() + ylab(expression("Mean cell intensity per field of view")) + ggtitle("RelA Cells") +
+geom_text(data = contrast_results, aes(x = 1.5, y = 0.1, label = paste("p =", sig)), size = 4, vjust = -1) +
+scale_y_log10()+
+scale_color_manual(values = c("#EE7600", "#EE7600"))
+
+plot_RelA_inf
+```
+```{r}
+#Load IHC data (RelA, no infection group)
+ihc_data <- read_excel(paste0(path, "Fig_S1.xlsx"), sheet = "S1L") %>%
+filter(staining == "RelA" & infection == "no infection")
+
+#Fit GLMM for Hif1a cells
+model <- glmer(dab_intensity ~ treatment + (1 | animal),
+data = ihc_data,
+family = Gamma(link = "identity"),
+control = glmerControl(optimizer = "bobyqa"))
+
+#plot(model)
+
+#Estimated marginal means and pairwise comparisons
+data_model <- emmeans(model, specs = pairwise ~ treatment, type = "response")$emmeans %>% as.data.frame()
+contrast_results <- emmeans(model, specs = pairwise ~ treatment, adjust = "Holm")$contrasts %>%
+summary(infer = TRUE) %>% as.data.frame()
+contrast_results <- contrast_results %>%
+  mutate(
+    p_value = round(p.value, 4),
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+```
+
+```{r}
+plot_RelA_no_inf <- ggplot(data_model, aes(treatment, emmean)) +
+geom_point(data = ihc_data, aes(treatment, dab_intensity, color = treatment),
+position = position_jitterdodge(jitter.width = 0.3), alpha = 0.5, size = 3) +
+geom_point(size = 3, color = "firebrick3", shape = 3) +
+geom_errorbar(aes(ymin = emmean - SE, ymax = emmean + SE), color = "firebrick3", width = 0, linewidth = 0.5) +
+theme_light() + ylab(expression("Mean cell intensity per field of view")) + ggtitle("RelA Cells") +
+geom_text(data = contrast_results, aes(x = 1.5, y = 0.1, label = paste("p =", sig)), size = 4, vjust = -1) +
+scale_y_log10()+
+scale_color_manual(values = c("#84838B", "#84838B"))
+
+plot_RelA_no_inf
+```
+
+---
+
+**Instructions:**
+- Set the `path` variable if your files are not in your working directory.
+- Make sure your Excel files and sheet names match those in the code.
+- Make sure to check model diagnostics.
+
+
